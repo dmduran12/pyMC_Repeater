@@ -155,8 +155,10 @@ class RepeaterDaemon:
         Enqueues packets for router processing.
         """
         if self.router:
-            await self.router.enqueue(packet)
-
+            try:
+                await self.router.enqueue(packet)
+            except Exception as e:
+                logger.error(f"Error enqueuing packet in router: {e}", exc_info=True)
     def get_stats(self) -> dict:
         stats = {}
         
