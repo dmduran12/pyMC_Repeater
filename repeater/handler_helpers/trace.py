@@ -8,7 +8,7 @@ of packets through the mesh network.
 
 import logging
 import time
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from pymc_core.node.handlers.trace import TraceHandler
 from pymc_core.protocol.constants import MAX_PATH_SIZE, ROUTE_TYPE_DIRECT
