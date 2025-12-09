@@ -98,20 +98,14 @@ class RepeaterHandler(BaseHandler):
         self._transport_keys_cache_time = 0
         self._transport_keys_cache_ttl = 60  # Cache for 60 seconds
         
-        self._last_drop_reason = None
-        self._known_neighbors = set()
-        
         self._start_background_tasks()
 
-    async def __call__(self, packet: Packet, metadata: Optional[dict] = None) -> None:
+    async def __call__(self, packet: Packet, metadata: Optional[dict] = None, local_transmission: bool = False) -> None:
 
         if metadata is None:
             metadata = {}
 
         self.rx_count += 1
-
-        # Reset drop reason for this packet processing
-        self._last_drop_reason = None
 
         # Check if we're in monitor mode (receive only, no forwarding)
         mode = self.config.get("repeater", {}).get("mode", "forward")
@@ -131,9 +125,20 @@ class RepeaterHandler(BaseHandler):
 
         original_path = list(packet.path) if packet.path else []
 
-        # Process for forwarding (skip if in monitor mode)
-        result = None if monitor_mode else self.process_packet(packet, snr)
+        # Process for forwarding (skip if in monitor mode or if this is a local transmission)
+        result = None if (monitor_mode or local_transmission) else self.process_packet(packet, snr)
         forwarded_path = None
+        
+        # For local transmissions, create a direct transmission result
+        if local_transmission and not monitor_mode:
+            # Mark local packet as seen to prevent duplicate processing when received back
+            self.mark_seen(packet)
+            # Calculate transmission delay for local packets
+            delay = self._calculate_tx_delay(packet, snr)
+            result = (packet, delay)
+            forwarded_path = list(packet.path) if packet.path else []
+            logger.debug(f"Local transmission: calculated delay {delay:.3f}s")
+        
         if result:
             fwd_pkt, delay = result
             tx_delay_ms = delay * 1000.0
@@ -167,8 +172,9 @@ class RepeaterHandler(BaseHandler):
             if monitor_mode:
                 drop_reason = "Monitor mode"
             else:
-                drop_reason = self._last_drop_reason or self._get_drop_reason(packet)
-            logger.debug(f"Packet not forwarded: {drop_reason}")
+                # Check if packet has a specific drop reason set by handlers
+                drop_reason = packet.drop_reason or self._get_drop_reason(packet)
+                logger.debug(f"Packet not forwarded: {drop_reason}")
 
         # Extract packet type and route from header
         if not hasattr(packet, "header") or packet.header is None:
@@ -190,10 +196,6 @@ class RepeaterHandler(BaseHandler):
         # Set drop reason for duplicates
         if is_dupe and drop_reason is None:
             drop_reason = "Duplicate"
-
-        # Process adverts for neighbor tracking
-        if payload_type == PAYLOAD_TYPE_ADVERT:
-            self._process_advert(packet, rssi, snr)
 
         path_hash = None
         display_path = (
@@ -258,9 +260,13 @@ class RepeaterHandler(BaseHandler):
         }
 
         # Store packet record to persistent storage
+        # Skip LetsMesh only for invalid packets (not duplicates or operational drops)
         if self.storage:
             try:
-                self.storage.record_packet(packet_record)
+                # Only skip LetsMesh for actual invalid/bad packets
+                invalid_reasons = ["Invalid advert packet", "Empty payload", "Path too long"]
+                skip_letsmesh = drop_reason in invalid_reasons if drop_reason else False
+                self.storage.record_packet(packet_record, skip_letsmesh_if_invalid=skip_letsmesh)
             except Exception as e:
                 logger.error(f"Failed to store packet record: {e}")
 
@@ -341,85 +347,6 @@ class RepeaterHandler(BaseHandler):
 
         # Default reason
         return "Unknown"
-
-    def _process_advert(self, packet: Packet, rssi: int, snr: float):
-
-        try:
-            from pymc_core.protocol.constants import ADVERT_FLAG_IS_REPEATER
-            from pymc_core.protocol.utils import (
-                decode_appdata,
-                get_contact_type_name,
-                parse_advert_payload,
-                determine_contact_type_from_flags,
-            )
-
-            # Parse advert payload
-            if not packet.payload or len(packet.payload) < 40:
-                return
-
-            advert_data = parse_advert_payload(packet.payload)
-            pubkey = advert_data.get("pubkey", "")
-
-            # Skip our own adverts
-            if self.dispatcher and hasattr(self.dispatcher, "local_identity"):
-                local_pubkey = self.dispatcher.local_identity.get_public_key().hex()
-                if pubkey == local_pubkey:
-                    logger.debug("Ignoring own advert in neighbor tracking")
-                    return
-
-            appdata = advert_data.get("appdata", b"")
-            if not appdata:
-                return
-
-            appdata_decoded = decode_appdata(appdata)
-            flags = appdata_decoded.get("flags", 0)
-            is_repeater = bool(flags & ADVERT_FLAG_IS_REPEATER)
-            route_type = packet.header & PH_ROUTE_MASK
-            contact_type_id = determine_contact_type_from_flags(flags)
-            contact_type = get_contact_type_name(contact_type_id)
-
-            # Extract neighbor info
-            node_name = appdata_decoded.get("node_name", "Unknown")
-            latitude = appdata_decoded.get("latitude")
-            longitude = appdata_decoded.get("longitude")
-
-            current_time = time.time()
-
-            if pubkey not in self._known_neighbors:
-                # Only check database if not in cache
-                current_neighbors = self.storage.get_neighbors() if self.storage else {}
-                is_new_neighbor = pubkey not in current_neighbors
-                
-                if is_new_neighbor:
-                    self._known_neighbors.add(pubkey)
-            else:
-                is_new_neighbor = False
-                
-            advert_record = {
-                "timestamp": current_time,
-                "pubkey": pubkey,
-                "node_name": node_name,
-                "is_repeater": is_repeater,
-                "route_type": route_type,
-                "contact_type": contact_type,
-                "latitude": latitude,
-                "longitude": longitude,
-                "rssi": rssi,
-                "snr": snr,
-                "is_new_neighbor": is_new_neighbor,
-            }
-
-            # Store to database
-            if self.storage:
-                try:
-                    self.storage.record_advert(advert_record)
-                    if is_new_neighbor:
-                        logger.info(f"Discovered new neighbor: {node_name} ({pubkey[:16]}...)")
-                except Exception as e:
-                    logger.error(f"Failed to store advert record: {e}")
-
-        except Exception as e:
-            logger.debug(f"Error processing advert for neighbor tracking: {e}")
 
     def is_duplicate(self, packet: Packet) -> bool:
 
@@ -531,12 +458,14 @@ class RepeaterHandler(BaseHandler):
         # Validate
         valid, reason = self.validate_packet(packet)
         if not valid:
-            self._last_drop_reason = reason
+            packet.drop_reason = reason
             return None
 
         # Check if packet is marked do-not-retransmit
         if packet.is_marked_do_not_retransmit():
-            self._last_drop_reason = "Marked do not retransmit"
+            # Check if packet has custom drop reason
+            if not packet.drop_reason:
+                packet.drop_reason = "Marked do not retransmit"
             return None
 
         # Check global flood policy
@@ -547,15 +476,15 @@ class RepeaterHandler(BaseHandler):
              
                 allowed, check_reason = self._check_transport_codes(packet)
                 if not allowed:
-                    self._last_drop_reason = check_reason
+                    packet.drop_reason = check_reason
                     return None
             else:
-                self._last_drop_reason = "Global flood policy disabled"
+                packet.drop_reason = "Global flood policy disabled"
                 return None
 
         # Suppress duplicates
         if self.is_duplicate(packet):
-            self._last_drop_reason = "Duplicate"
+            packet.drop_reason = "Duplicate"
             return None
 
         if packet.path is None:
@@ -574,12 +503,12 @@ class RepeaterHandler(BaseHandler):
 
         # Check if we're the next hop
         if not packet.path or len(packet.path) == 0:
-            self._last_drop_reason = "Direct: no path"
+            packet.drop_reason = "Direct: no path"
             return None
 
-        next_hop = packet.path[0]
+        next_hop = packet.path[0] 
         if next_hop != self.local_hash:
-            self._last_drop_reason = "Direct: not for us"
+            packet.drop_reason = "Direct: not for us"
             return None
 
         original_path = list(packet.path)
@@ -681,7 +610,7 @@ class RepeaterHandler(BaseHandler):
             return fwd_pkt, delay
 
         else:
-            self._last_drop_reason = f"Unknown route type: {route_type}"
+            packet.drop_reason = f"Unknown route type: {route_type}"
             return None
 
     async def schedule_retransmit(self, fwd_pkt: Packet, delay: float, airtime_ms: float = 0.0):

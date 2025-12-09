@@ -15,6 +15,7 @@ class SQLiteHandler:
         self.storage_dir = storage_dir
         self.sqlite_path = self.storage_dir / "repeater.db"
         self._init_database()
+        self._run_migrations()
 
     def _init_database(self):
         try:
@@ -63,7 +64,8 @@ class SQLiteHandler:
                         rssi INTEGER,
                         snr REAL,
                         advert_count INTEGER NOT NULL DEFAULT 1,
-                        is_new_neighbor BOOLEAN NOT NULL
+                        is_new_neighbor BOOLEAN NOT NULL,
+                        zero_hop BOOLEAN NOT NULL DEFAULT FALSE
                     )
                 """)
                 
@@ -104,6 +106,47 @@ class SQLiteHandler:
                 
         except Exception as e:
             logger.error(f"Failed to initialize SQLite: {e}")
+
+    def _run_migrations(self):
+        """Run database migrations"""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                # Create migrations table if it doesn't exist
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS migrations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        migration_name TEXT NOT NULL UNIQUE,
+                        applied_at REAL NOT NULL
+                    )
+                """)
+                
+                # Migration 1: Add zero_hop column to adverts table
+                migration_name = "add_zero_hop_to_adverts"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,)
+                ).fetchone()
+                
+                if not existing:
+                    # Check if zero_hop column already exists
+                    cursor = conn.execute("PRAGMA table_info(adverts)")
+                    columns = [column[1] for column in cursor.fetchall()]
+                    
+                    if "zero_hop" not in columns:
+                        conn.execute("ALTER TABLE adverts ADD COLUMN zero_hop BOOLEAN NOT NULL DEFAULT FALSE")
+                        logger.info("Added zero_hop column to adverts table")
+                    
+                    # Mark migration as applied
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time())
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+                
+                conn.commit()
+                
+        except Exception as e:
+            logger.error(f"Failed to run migrations: {e}")
 
     def store_packet(self, record: dict):
         try:
@@ -169,7 +212,8 @@ class SQLiteHandler:
                         UPDATE adverts 
                         SET timestamp = ?, node_name = ?, is_repeater = ?, route_type = ?,
                             contact_type = ?, latitude = ?, longitude = ?, last_seen = ?,
-                            rssi = ?, snr = ?, advert_count = advert_count + 1, is_new_neighbor = 0
+                            rssi = ?, snr = ?, advert_count = advert_count + 1, is_new_neighbor = 0,
+                            zero_hop = ?
                         WHERE pubkey = ?
                     """, (
                         current_time,
@@ -182,14 +226,16 @@ class SQLiteHandler:
                         current_time,
                         record.get("rssi"),
                         record.get("snr"),
+                        record.get("zero_hop", False),
                         record.get("pubkey", "")
                     ))
                 else:
                     conn.execute("""
                         INSERT INTO adverts (
                             timestamp, pubkey, node_name, is_repeater, route_type, contact_type, 
-                            latitude, longitude, first_seen, last_seen, rssi, snr, advert_count, is_new_neighbor
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            latitude, longitude, first_seen, last_seen, rssi, snr, advert_count, 
+                            is_new_neighbor, zero_hop
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         current_time,
                         record.get("pubkey", ""),
@@ -204,7 +250,8 @@ class SQLiteHandler:
                         record.get("rssi"),
                         record.get("snr"),
                         1,
-                        True
+                        True,
+                        record.get("zero_hop", False)
                     ))
                 
         except Exception as e:
@@ -619,7 +666,7 @@ class SQLiteHandler:
                 query = """
                     SELECT id, timestamp, pubkey, node_name, is_repeater, route_type, 
                            contact_type, latitude, longitude, first_seen, last_seen, 
-                           rssi, snr, advert_count, is_new_neighbor
+                           rssi, snr, advert_count, is_new_neighbor, zero_hop
                     FROM adverts 
                     WHERE contact_type = ?
                 """
@@ -655,11 +702,11 @@ class SQLiteHandler:
                         "rssi": row["rssi"],
                         "snr": row["snr"],
                         "advert_count": row["advert_count"],
-                        "is_new_neighbor": bool(row["is_new_neighbor"])
+                        "is_new_neighbor": bool(row["is_new_neighbor"]),
+                        "zero_hop": bool(row["zero_hop"])
                     }
                     adverts.append(advert)
                 
-                logger.debug(f"Found {len(adverts)} adverts with contact_type '{contact_type}'")
                 return adverts
                 
         except Exception as e:
