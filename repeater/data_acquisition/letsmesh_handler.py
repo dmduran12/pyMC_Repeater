@@ -142,7 +142,7 @@ class MeshCoreToMqttJwtPusher:
         signature_hex = binascii.hexlify(signature).decode()
         token = f"{header_b64}.{payload_b64}.{signature_hex}"
 
-        logging.debug(f"Generated MeshCore token: {token}")
+        logging.debug(f"Generated MeshCore token: {token[:10]}...{token[-10:]}")
         return token
 
     # ----------------------------------------------------------------
