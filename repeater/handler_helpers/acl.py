@@ -1,0 +1,127 @@
+"""
+Access Control List for pyMC Repeater.
+
+Manages authenticated clients with permission-based access control.
+Shared across all identities (repeater and room servers).
+"""
+
+import logging
+import time
+from typing import Dict, Optional
+
+from pymc_core.protocol import Identity
+from pymc_core.protocol.constants import PUB_KEY_SIZE
+
+logger = logging.getLogger("ACL")
+
+PERM_ACL_GUEST = 0x01
+PERM_ACL_ADMIN = 0x02
+PERM_ACL_READ_WRITE = 0x01
+PERM_ACL_ROLE_MASK = 0x03
+
+
+class ClientInfo:
+    """Represents an authenticated client in the access control list."""
+
+    def __init__(self, identity: Identity, permissions: int = 0):
+        self.id = identity
+        self.permissions = permissions
+        self.shared_secret = b""
+        self.last_timestamp = 0
+        self.last_activity = 0
+        self.last_login_success = 0
+        self.out_path_len = -1
+        self.out_path = bytearray()
+
+    def is_admin(self) -> bool:
+        return (self.permissions & PERM_ACL_ROLE_MASK) == PERM_ACL_ADMIN
+
+    def is_guest(self) -> bool:
+        return (self.permissions & PERM_ACL_ROLE_MASK) == PERM_ACL_GUEST
+
+
+class ACL:
+
+    def __init__(
+        self,
+        max_clients: int = 50,
+        admin_password: str = "admin123",
+        guest_password: str = "guest123",
+        allow_read_only: bool = True,
+    ):
+        self.max_clients = max_clients
+        self.admin_password = admin_password
+        self.guest_password = guest_password
+        self.allow_read_only = allow_read_only
+        self.clients: Dict[bytes, ClientInfo] = {}
+
+    def authenticate_client(
+        self, client_identity: Identity, shared_secret: bytes, password: str, timestamp: int
+    ) -> tuple[bool, int]:
+ 
+        pub_key = client_identity.get_public_key()[:PUB_KEY_SIZE]
+
+        if not password:
+            client = self.clients.get(pub_key)
+            if client is None:
+                if self.allow_read_only:
+                    logger.info("Blank password, allowing read-only guest access")
+                    return True, PERM_ACL_GUEST
+                else:
+                    logger.info("Blank password, sender not in ACL and read-only disabled")
+                    return False, 0
+            logger.info(f"ACL-based login for {pub_key[:6].hex()}...")
+            return True, client.permissions
+
+        permissions = 0
+        if password == self.admin_password:
+            permissions = PERM_ACL_ADMIN
+            logger.info("Admin password validated")
+        elif self.guest_password and password == self.guest_password:
+            permissions = PERM_ACL_READ_WRITE
+            logger.info("Guest password validated")
+        else:
+            logger.info("Invalid password")
+            return False, 0
+
+        client = self.clients.get(pub_key)
+        if client is None:
+            if len(self.clients) >= self.max_clients:
+                logger.warning("ACL full, cannot add client")
+                return False, 0
+
+            client = ClientInfo(client_identity, 0)
+            self.clients[pub_key] = client
+            logger.info(f"Added new client {pub_key[:6].hex()}...")
+
+        if timestamp <= client.last_timestamp:
+            logger.warning(
+                f"Possible replay attack! timestamp={timestamp}, last={client.last_timestamp}"
+            )
+            return False, 0
+
+        client.last_timestamp = timestamp
+        client.last_activity = int(time.time())
+        client.last_login_success = int(time.time())
+        client.permissions &= ~PERM_ACL_ROLE_MASK
+        client.permissions |= permissions
+        client.shared_secret = shared_secret
+
+        logger.info(f"Login success! Permissions: {'ADMIN' if client.is_admin() else 'GUEST'}")
+        return True, client.permissions
+
+    def get_client(self, pub_key: bytes) -> Optional[ClientInfo]:
+        return self.clients.get(pub_key[:PUB_KEY_SIZE])
+
+    def get_num_clients(self) -> int:
+        return len(self.clients)
+
+    def get_all_clients(self):
+        return list(self.clients.values())
+
+    def remove_client(self, pub_key: bytes) -> bool:
+        key = pub_key[:PUB_KEY_SIZE]
+        if key in self.clients:
+            del self.clients[key]
+            return True
+        return False

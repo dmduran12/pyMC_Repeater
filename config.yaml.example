@@ -39,6 +39,20 @@ repeater:
   # with its node information (node type 2 - repeater)
   allow_discovery: true
 
+  # Security settings for login/authentication (shared across all identities)
+  security:
+    # Maximum number of authenticated clients (across all identities)
+    max_clients: 1
+    
+    # Admin password for full access
+    admin_password: "admin123"
+    
+    # Guest password for limited access
+    guest_password: "guest123"
+    
+    # Allow read-only access for clients without password/not in ACL
+    allow_read_only: false
+
 # Mesh Network Configuration
 mesh:
   # Global flood policy - controls whether the repeater allows or denies flooding by default
@@ -46,6 +60,33 @@ mesh:
   # Individual transport keys can override this setting
   global_flood_allow: true
 
+# Multiple Identity Configuration (Optional)
+# Define additional identities for the repeater to manage
+# Each identity operates independently with its own key pair and configuration
+# Note: All identities share the same ACL (security settings from repeater.security)
+identities:
+  # Room Server Identities
+  # Each room server acts as a separate logical node on the mesh
+  room_servers:
+    # Example room server configuration (commented out by default)
+    # - name: "TestBBS"
+    #   identity_key: "your_room_identity_key_hex_here"
+    #   type: "room_server"
+    #   
+    #   # Room-specific settings
+    #   settings:
+    #     node_name: "Test BBS Room"
+    #     latitude: 0.0
+    #     longitude: 0.0
+    #     disable_fwd: true  # Room servers typically don't forward
+    
+    # Add more room servers as needed
+    # - name: "SocialHub"
+    #   identity_key: "another_identity_key_hex_here"
+    #   type: "room_server"
+    #   settings:
+    #     node_name: "Social Hub"
+    
 radio:
   # Frequency in Hz (869.618 MHz for EU)
   frequency: 869618000

@@ -12,6 +12,7 @@ import logging
 from pymc_core.node.handlers.trace import TraceHandler
 from pymc_core.node.handlers.control import ControlHandler
 from pymc_core.node.handlers.advert import AdvertHandler
+from pymc_core.node.handlers.login_server import LoginServerHandler
 
 logger = logging.getLogger("PacketRouter")
 
@@ -124,6 +125,14 @@ class PacketRouter:
                 rssi = getattr(packet, "rssi", 0)
                 snr = getattr(packet, "snr", 0.0)
                 await self.daemon.advert_helper.process_advert_packet(packet, rssi, snr)
+        
+        elif payload_type == LoginServerHandler.payload_type():
+            # Process ANON_REQ login packet for all identities
+            if self.daemon.login_helper:
+                handled = await self.daemon.login_helper.process_login_packet(packet)
+                # Only skip forwarding if we actually handled it
+                if handled:
+                    processed_by_injection = True
         
         # Only pass to repeater engine if not already processed by injection
         if self.daemon.repeater_handler and not processed_by_injection:

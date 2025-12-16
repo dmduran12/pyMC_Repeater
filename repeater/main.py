@@ -6,8 +6,9 @@ import sys
 from repeater.config import get_radio_for_board, load_config
 from repeater.engine import RepeaterHandler
 from repeater.web.http_server import HTTPStatsServer, _log_buffer
-from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper
+from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper
 from repeater.packet_router import PacketRouter
+from repeater.identity_manager import IdentityManager
 
 logger = logging.getLogger("RepeaterDaemon")
 
@@ -22,10 +23,13 @@ class RepeaterDaemon:
         self.repeater_handler = None
         self.local_hash = None
         self.local_identity = None
+        self.identity_manager = None
         self.http_server = None
         self.trace_helper = None
         self.advert_helper = None
         self.discovery_helper = None
+        self.login_helper = None
+        self.acl = None
         self.router = None
 
 
@@ -84,6 +88,11 @@ class RepeaterDaemon:
             self.dispatcher = Dispatcher(self.radio)
             logger.info("Dispatcher initialized")
 
+            # Initialize Identity Manager for additional identities (e.g., room servers)
+            self.identity_manager = IdentityManager(self.config)
+            logger.info("Identity manager initialized")
+
+            # Set up default repeater identity (not managed by identity manager)
             identity_key = self.config.get("mesh", {}).get("identity_key")
             if not identity_key:
                 logger.error("No identity key found in configuration. Cannot init repeater.")
@@ -95,10 +104,13 @@ class RepeaterDaemon:
 
             pubkey = local_identity.get_public_key()
             self.local_hash = pubkey[0]
+            
             logger.info(f"Local identity set: {local_identity.get_address_bytes().hex()}")
-            local_hash_hex = f"0x{self.local_hash: 02x}"
+            local_hash_hex = f"0x{self.local_hash:02x}"
             logger.info(f"Local node hash (from identity): {local_hash_hex}")
 
+            # Load additional identities from config (e.g., room servers)
+            await self._load_additional_identities()
 
             self.dispatcher._is_own_packet = lambda pkt: False
 
@@ -120,6 +132,7 @@ class RepeaterDaemon:
                 local_hash=self.local_hash,
                 repeater_handler=self.repeater_handler,
                 packet_injector=self.router.inject_packet,
+                identity_manager=self.identity_manager,
                 log_fn=logger.info,
             )
             logger.info("Trace processing helper initialized")
@@ -128,6 +141,7 @@ class RepeaterDaemon:
             self.advert_helper = AdvertHelper(
                 local_identity=self.local_identity,
                 storage=self.repeater_handler.storage if self.repeater_handler else None,
+                identity_manager=self.identity_manager,
                 log_fn=logger.info,
             )
             logger.info("Advert processing helper initialized")
@@ -138,6 +152,7 @@ class RepeaterDaemon:
                 self.discovery_helper = DiscoveryHelper(
                     local_identity=self.local_identity,
                     packet_injector=self.router.inject_packet,
+                    identity_manager=self.identity_manager,
                     node_type=2,
                     log_fn=logger.info,
                 )
@@ -145,9 +160,88 @@ class RepeaterDaemon:
             else:
                 logger.info("Discovery response handler disabled")
 
+            # Create shared ACL for all identities
+            from repeater.handler_helpers.acl import ACL
+            
+            repeater_config = self.config.get("repeater", {})
+            security_config = repeater_config.get("security", {})
+            
+            shared_acl = ACL(
+                max_clients=security_config.get("max_clients", 50),
+                admin_password=security_config.get("admin_password", "admin123"),
+                guest_password=security_config.get("guest_password", "guest123"),
+                allow_read_only=security_config.get("allow_read_only", True),
+            )
+            self.acl = shared_acl
+            logger.info("Shared ACL initialized")
+            
+            # Create login helper with shared ACL
+            self.login_helper = LoginHelper(
+                identity_manager=self.identity_manager,
+                packet_injector=self.router.inject_packet,
+                acl=shared_acl,
+                log_fn=logger.info,
+            )
+            
+            # Register default repeater identity
+            self.login_helper.register_identity(
+                name="repeater",
+                identity=self.local_identity,
+                identity_type="repeater"
+            )
+            
+            # Register room server identities
+            for name, identity, config in self.identity_manager.get_identities_by_type("room_server"):
+                self.login_helper.register_identity(name, identity, identity_type="room_server")
+            
+            logger.info("Login processing helper initialized")
+
         except Exception as e:
             logger.error(f"Failed to initialize dispatcher: {e}")
             raise
+
+    async def _load_additional_identities(self):
+        from pymc_core import LocalIdentity
+        
+        identities_config = self.config.get("identities", {})
+        
+        # Load room server identities
+        room_servers = identities_config.get("room_servers", [])
+        for room_config in room_servers:
+            try:
+                name = room_config.get("name")
+                identity_key = room_config.get("identity_key")
+                
+                if not name or not identity_key:
+                    logger.warning(
+                        f"Skipping room server config: missing name or identity_key"
+                    )
+                    continue
+                
+                # Create the identity
+                room_identity = LocalIdentity(seed=identity_key)
+                
+                # Register with the manager
+                success = self.identity_manager.register_identity(
+                    name=name,
+                    identity=room_identity,
+                    config=room_config,
+                    identity_type="room_server"
+                )
+                
+                if success:
+                    room_hash = room_identity.get_public_key()[0]
+                    logger.info(
+                        f"Loaded room server '{name}': hash=0x{room_hash:02x}, "
+                        f"address={room_identity.get_address_bytes().hex()}"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Failed to load room server identity '{name}': {e}")
+        
+        # Summary logging
+        total_identities = len(self.identity_manager.list_identities())
+        logger.info(f"Identity manager loaded {total_identities} total identities")
 
     async def _router_callback(self, packet):
         """

@@ -3,5 +3,6 @@
 from .trace import TraceHelper
 from .discovery import DiscoveryHelper
 from .advert import AdvertHelper
+from .login import LoginHelper
 
-__all__ = ["TraceHelper", "DiscoveryHelper", "AdvertHelper"]
+__all__ = ["TraceHelper", "DiscoveryHelper", "AdvertHelper", "LoginHelper"]
