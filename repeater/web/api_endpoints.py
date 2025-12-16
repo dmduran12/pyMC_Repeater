@@ -954,3 +954,345 @@ class APIEndpoints:
         except Exception as e:
             logger.error(f"Error pinging neighbor: {e}")
             return self._error(e)
+
+    # ========== Identity Management Endpoints ==========
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def identities(self):
+        """
+        GET /api/identities - List all registered identities
+        
+        Returns both the in-memory registered identities and the configured ones from YAML
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            if not self.daemon_instance or not hasattr(self.daemon_instance, 'identity_manager'):
+                return self._error("Identity manager not available")
+            
+            # Get runtime registered identities
+            identity_manager = self.daemon_instance.identity_manager
+            registered_identities = identity_manager.list_identities()
+            
+            # Get configured identities from config
+            identities_config = self.config.get("identities", {})
+            room_servers = identities_config.get("room_servers") or []
+            
+            # Enhance with config data
+            configured = []
+            for room_config in room_servers:
+                name = room_config.get("name")
+                identity_key = room_config.get("identity_key", "")
+                settings = room_config.get("settings", {})
+                
+                # Find matching registered identity for additional data
+                matching = next(
+                    (r for r in registered_identities if r["name"] == f"room_server:{name}"),
+                    None
+                )
+                
+                configured.append({
+                    "name": name,
+                    "type": "room_server",
+                    "identity_key": identity_key[:16] + "..." if len(identity_key) > 16 else identity_key,
+                    "identity_key_length": len(identity_key),
+                    "settings": settings,
+                    "hash": matching["hash"] if matching else None,
+                    "address": matching["address"] if matching else None,
+                    "registered": matching is not None
+                })
+            
+            return self._success({
+                "registered": registered_identities,
+                "configured": configured,
+                "total_registered": len(registered_identities),
+                "total_configured": len(configured)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error listing identities: {e}")
+            return self._error(e)
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def identity(self, name=None):
+        """
+        GET /api/identity?name=<name> - Get a specific identity by name
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            if not name:
+                return self._error("Missing name parameter")
+            
+            identities_config = self.config.get("identities", {})
+            room_servers = identities_config.get("room_servers") or []
+            
+            # Find the identity in config
+            identity_config = next(
+                (r for r in room_servers if r.get("name") == name),
+                None
+            )
+            
+            if not identity_config:
+                return self._error(f"Identity '{name}' not found")
+            
+            # Get runtime info if available
+            if self.daemon_instance and hasattr(self.daemon_instance, 'identity_manager'):
+                identity_manager = self.daemon_instance.identity_manager
+                runtime_info = identity_manager.get_identity_by_name(name)
+                
+                if runtime_info:
+                    identity_obj, config, identity_type = runtime_info
+                    identity_config["runtime"] = {
+                        "hash": f"0x{identity_obj.get_public_key()[0]:02X}",
+                        "address": identity_obj.get_address_bytes().hex(),
+                        "type": identity_type,
+                        "registered": True
+                    }
+                else:
+                    identity_config["runtime"] = {"registered": False}
+            
+            return self._success(identity_config)
+            
+        except Exception as e:
+            logger.error(f"Error getting identity: {e}")
+            return self._error(e)
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in()
+    def create_identity(self):
+        """
+        POST /api/create_identity - Create a new identity
+        
+        Body: {
+            "name": "MyRoomServer",
+            "identity_key": "hex_key_string",
+            "type": "room_server",
+            "settings": {
+                "node_name": "My Room",
+                "latitude": 0.0,
+                "longitude": 0.0,
+                "disable_fwd": true
+            }
+        }
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            self._require_post()
+            data = cherrypy.request.json or {}
+            
+            name = data.get("name")
+            identity_key = data.get("identity_key")
+            identity_type = data.get("type", "room_server")
+            settings = data.get("settings", {})
+            
+            if not name:
+                return self._error("Missing required field: name")
+            
+            if not identity_key:
+                return self._error("Missing required field: identity_key")
+            
+            # Validate identity type
+            if identity_type not in ["room_server"]:
+                return self._error(f"Invalid identity type: {identity_type}. Only 'room_server' is supported.")
+            
+            # Check if identity already exists
+            identities_config = self.config.get("identities", {})
+            room_servers = identities_config.get("room_servers") or []
+            
+            if any(r.get("name") == name for r in room_servers):
+                return self._error(f"Identity with name '{name}' already exists")
+            
+            # Create new identity config
+            new_identity = {
+                "name": name,
+                "identity_key": identity_key,
+                "type": identity_type,
+                "settings": settings
+            }
+            
+            # Add to config
+            room_servers.append(new_identity)
+            
+            if "identities" not in self.config:
+                self.config["identities"] = {}
+            self.config["identities"]["room_servers"] = room_servers
+            
+            # Save to file
+            config_path = getattr(self, '_config_path', '/etc/pymc_repeater/config.yaml')
+            if self.daemon_instance and hasattr(self.daemon_instance, 'config_path'):
+                config_path = self.daemon_instance.config_path
+            
+            self._save_config_to_file(config_path)
+            
+            logger.info(f"Created new identity: {name} (type: {identity_type})")
+            
+            return self._success(
+                new_identity,
+                message=f"Identity '{name}' created successfully. Restart required to activate."
+            )
+            
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating identity: {e}")
+            return self._error(e)
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in()
+    def update_identity(self):
+        """
+        PUT /api/update_identity - Update an existing identity
+        
+        Body: {
+            "name": "MyRoomServer",  # Required - used to find identity
+            "new_name": "RenamedRoom",  # Optional - rename identity
+            "identity_key": "new_hex_key",  # Optional - update key
+            "settings": {  # Optional - update settings
+                "node_name": "Updated Room Name",
+                "latitude": 1.0,
+                "longitude": 2.0
+            }
+        }
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            if cherrypy.request.method != "PUT":
+                cherrypy.response.status = 405
+                cherrypy.response.headers['Allow'] = 'PUT'
+                raise cherrypy.HTTPError(405, "Method not allowed. This endpoint requires PUT.")
+            
+            data = cherrypy.request.json or {}
+            
+            name = data.get("name")
+            if not name:
+                return self._error("Missing required field: name")
+            
+            identities_config = self.config.get("identities", {})
+            room_servers = identities_config.get("room_servers") or []
+            
+            # Find the identity
+            identity_index = next(
+                (i for i, r in enumerate(room_servers) if r.get("name") == name),
+                None
+            )
+            
+            if identity_index is None:
+                return self._error(f"Identity '{name}' not found")
+            
+            # Update fields
+            identity = room_servers[identity_index]
+            
+            if "new_name" in data:
+                new_name = data["new_name"]
+                # Check if new name conflicts
+                if any(r.get("name") == new_name for i, r in enumerate(room_servers) if i != identity_index):
+                    return self._error(f"Identity with name '{new_name}' already exists")
+                identity["name"] = new_name
+            
+            if "identity_key" in data:
+                identity["identity_key"] = data["identity_key"]
+            
+            if "settings" in data:
+                # Merge settings
+                if "settings" not in identity:
+                    identity["settings"] = {}
+                identity["settings"].update(data["settings"])
+            
+            # Save to config
+            room_servers[identity_index] = identity
+            self.config["identities"]["room_servers"] = room_servers
+            
+            config_path = getattr(self, '_config_path', '/etc/pymc_repeater/config.yaml')
+            if self.daemon_instance and hasattr(self.daemon_instance, 'config_path'):
+                config_path = self.daemon_instance.config_path
+            
+            self._save_config_to_file(config_path)
+            
+            logger.info(f"Updated identity: {name}")
+            
+            return self._success(
+                identity,
+                message=f"Identity '{name}' updated successfully. Restart required to apply changes."
+            )
+            
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating identity: {e}")
+            return self._error(e)
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def delete_identity(self, name=None):
+        """
+        DELETE /api/delete_identity?name=<name> - Delete an identity
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            if cherrypy.request.method != "DELETE":
+                cherrypy.response.status = 405
+                cherrypy.response.headers['Allow'] = 'DELETE'
+                raise cherrypy.HTTPError(405, "Method not allowed. This endpoint requires DELETE.")
+            
+            if not name:
+                return self._error("Missing name parameter")
+            
+            identities_config = self.config.get("identities", {})
+            room_servers = identities_config.get("room_servers") or []
+            
+            # Find and remove the identity
+            initial_count = len(room_servers)
+            room_servers = [r for r in room_servers if r.get("name") != name]
+            
+            if len(room_servers) == initial_count:
+                return self._error(f"Identity '{name}' not found")
+            
+            # Update config
+            self.config["identities"]["room_servers"] = room_servers
+            
+            config_path = getattr(self, '_config_path', '/etc/pymc_repeater/config.yaml')
+            if self.daemon_instance and hasattr(self.daemon_instance, 'config_path'):
+                config_path = self.daemon_instance.config_path
+            
+            self._save_config_to_file(config_path)
+            
+            logger.info(f"Deleted identity: {name}")
+            
+            return self._success(
+                {"name": name},
+                message=f"Identity '{name}' deleted successfully. Restart required to apply changes."
+            )
+            
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting identity: {e}")
+            return self._error(e)

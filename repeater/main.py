@@ -132,7 +132,6 @@ class RepeaterDaemon:
                 local_hash=self.local_hash,
                 repeater_handler=self.repeater_handler,
                 packet_injector=self.router.inject_packet,
-                identity_manager=self.identity_manager,
                 log_fn=logger.info,
             )
             logger.info("Trace processing helper initialized")
@@ -141,7 +140,6 @@ class RepeaterDaemon:
             self.advert_helper = AdvertHelper(
                 local_identity=self.local_identity,
                 storage=self.repeater_handler.storage if self.repeater_handler else None,
-                identity_manager=self.identity_manager,
                 log_fn=logger.info,
             )
             logger.info("Advert processing helper initialized")
@@ -152,7 +150,6 @@ class RepeaterDaemon:
                 self.discovery_helper = DiscoveryHelper(
                     local_identity=self.local_identity,
                     packet_injector=self.router.inject_packet,
-                    identity_manager=self.identity_manager,
                     node_type=2,
                     log_fn=logger.info,
                 )
@@ -206,7 +203,7 @@ class RepeaterDaemon:
         identities_config = self.config.get("identities", {})
         
         # Load room server identities
-        room_servers = identities_config.get("room_servers", [])
+        room_servers = identities_config.get("room_servers") or []
         for room_config in room_servers:
             try:
                 name = room_config.get("name")
