@@ -157,7 +157,15 @@ class HTTPStatsServer:
                         'txt': 'text/plain'
                     },
                 },
-                "/assets": {
+                "/favicon.ico": {
+                    "tools.staticfile.on": True,
+                    "tools.staticfile.filename": os.path.join(html_dir, "favicon.ico"),
+                },
+            }
+            
+            # Add Vue.js assets support only if assets directory exists
+            if os.path.isdir(assets_dir):
+                config["/assets"] = {
                     "tools.staticdir.on": True,
                     "tools.staticdir.dir": assets_dir,
                     # Set proper content types for assets
@@ -166,12 +174,7 @@ class HTTPStatsServer:
                         'css': 'text/css',
                         'map': 'application/json'
                     },
-                },
-                "/favicon.ico": {
-                    "tools.staticfile.on": True,
-                    "tools.staticfile.filename": os.path.join(html_dir, "favicon.ico"),
-                },
-            }
+                }
             
             # Add Next.js support only if _next directory exists
             if os.path.isdir(next_dir):
@@ -189,7 +192,8 @@ class HTTPStatsServer:
             # Only add CORS config entries if CORS is enabled
             if self._cors_enabled:
                 config["/"]["cors.expose.on"] = True
-                config["/assets"]["cors.expose.on"] = True
+                if "/assets" in config:
+                    config["/assets"]["cors.expose.on"] = True
                 if "/_next" in config:
                     config["/_next"]["cors.expose.on"] = True
                 config["/favicon.ico"]["cors.expose.on"] = True
