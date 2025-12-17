@@ -338,11 +338,6 @@ class TextHelper:
                 route_type=route_type
             )
             
-            # Debug reply packet structure
-            if len(reply_packet.payload) >= 2:
-                reply_dest_hash = reply_packet.payload[0]
-                reply_src_hash = reply_packet.payload[1]
-                logger.debug(f"CLI reply: Packet created - dest=0x{reply_dest_hash:02X}, src=0x{reply_src_hash:02X}, route={reply_packet.get_route_type()}")
             
             # Add path for direct routing if available from PATH packets
             if client.out_path_len >= 0 and len(client.out_path) > 0:

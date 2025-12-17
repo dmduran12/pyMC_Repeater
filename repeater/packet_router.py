@@ -7,6 +7,7 @@ from pymc_core.node.handlers.advert import AdvertHandler
 from pymc_core.node.handlers.login_server import LoginServerHandler
 from pymc_core.node.handlers.text import TextMessageHandler
 from pymc_core.node.handlers.path import PathHandler
+from pymc_core.node.handlers.protocol_request import ProtocolRequestHandler
 
 logger = logging.getLogger("PacketRouter")
 
@@ -114,6 +115,13 @@ class PacketRouter:
             if self.daemon.path_helper:
                 await self.daemon.path_helper.process_path_packet(packet)
                 # Note: process_path_packet returns False to allow forwarding
+        
+        elif payload_type == ProtocolRequestHandler.payload_type():
+            # Process protocol request packet (status, telemetry, neighbors, etc.)
+            if self.daemon.protocol_request_helper:
+                handled = await self.daemon.protocol_request_helper.process_request_packet(packet)
+                if handled:
+                    processed_by_injection = True
         
         # Only pass to repeater engine if not already processed by injection
         if self.daemon.repeater_handler and not processed_by_injection:

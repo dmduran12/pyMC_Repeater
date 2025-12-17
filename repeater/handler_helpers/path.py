@@ -52,7 +52,8 @@ class PathHelper:
                 return False
             
             mac_and_data = packet.payload[2:]  # Skip dest_hash and src_hash
-            decrypted = CryptoUtils.mac_then_decrypt(shared_secret, mac_and_data)
+            aes_key = shared_secret[:16]
+            decrypted = CryptoUtils.mac_then_decrypt(aes_key, shared_secret, mac_and_data)
             
             if not decrypted:
                 logger.debug(f"Failed to decrypt PATH packet from 0x{src_hash:02X}")

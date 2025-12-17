@@ -231,15 +231,19 @@ class RepeaterCLI:
         
         elif param == "radio":
             radio = self.config.get('radio', {})
-            freq = radio.get('frequency', 915.0)
-            bw = radio.get('bandwidth', 125.0)
+            freq_hz = radio.get('frequency', 915000000)
+            bw_hz = radio.get('bandwidth', 125000)
             sf = radio.get('spreading_factor', 7)
             cr = radio.get('coding_rate', 5)
-            return f"> {freq},{bw},{sf},{cr}"
+            # Convert Hz to MHz for freq, Hz to kHz for bandwidth (match C++ ftoa output)
+            freq_mhz = freq_hz / 1_000_000.0
+            bw_khz = bw_hz / 1_000.0
+            return f"> {freq_mhz},{bw_khz},{sf},{cr}"
         
         elif param == "freq":
-            freq = self.config.get('radio', {}).get('frequency', 915.0)
-            return f"> {freq}"
+            freq_hz = self.config.get('radio', {}).get('frequency', 915000000)
+            freq_mhz = freq_hz / 1_000_000.0
+            return f"> {freq_mhz}"
         
         elif param == "tx":
             power = self.config.get('radio', {}).get('tx_power', 20)

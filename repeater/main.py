@@ -6,7 +6,7 @@ import sys
 from repeater.config import get_radio_for_board, load_config
 from repeater.engine import RepeaterHandler
 from repeater.web.http_server import HTTPStatsServer, _log_buffer
-from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper, TextHelper, PathHelper
+from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper, TextHelper, PathHelper, ProtocolRequestHelper
 from repeater.packet_router import PacketRouter
 from repeater.identity_manager import IdentityManager
 
@@ -31,6 +31,7 @@ class RepeaterDaemon:
         self.login_helper = None
         self.text_helper = None
         self.path_helper = None
+        self.protocol_request_helper = None
         self.acl = None
         self.router = None
 
@@ -222,6 +223,23 @@ class RepeaterDaemon:
                 log_fn=logger.info,
             )
             logger.info("PATH packet processing helper initialized")
+            
+            # Initialize protocol request handler for status/telemetry requests
+            self.protocol_request_helper = ProtocolRequestHelper(
+                identity_manager=self.identity_manager,
+                packet_injector=self.router.inject_packet,
+                acl_dict=self.login_helper.get_acl_dict(),
+                radio=self.radio,
+                engine=self.repeater_handler,
+                neighbor_tracker=self.advert_helper,
+            )
+            # Register repeater identity for protocol requests
+            self.protocol_request_helper.register_identity(
+                name="repeater",
+                identity=self.local_identity,
+                identity_type="repeater"
+            )
+            logger.info("Protocol request handler initialized")
 
         except Exception as e:
             logger.error(f"Failed to initialize dispatcher: {e}")
