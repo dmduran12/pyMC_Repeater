@@ -143,11 +143,10 @@ class TextHelper:
                                 is_admin=is_admin
                             )
                             
-                            # Send reply through text handler
                             logger.info(f"CLI command from 0x{src_hash:02X}: {message_text[:50]} -> {reply[:100]}")
                             
-                            # TODO: Send reply packet
-                            # For now, just log it
+                            # Send reply back to sender using TXT_MSG
+                            await self._send_cli_reply(packet, reply, handler_info)
                             
                             packet.mark_do_not_retransmit()
                             return True
@@ -262,3 +261,76 @@ class TextHelper:
                 return (permissions & 0x01) != 0
         
         return False
+    
+    async def _send_cli_reply(self, original_packet, reply_text: str, handler_info: dict):
+        """
+        Send CLI reply back to sender using TXT_MSG datagram.
+        
+        Follows the C++ pattern:
+        - Creates TXT_MSG datagram with TXT_TYPE_CLI_DATA flag
+        - Encrypts with shared secret from ACL client
+        - Sends via flood or direct depending on client's out_path
+        """
+        from pymc_core.protocol import PacketBuilder, Identity
+        from pymc_core.protocol.constants import PAYLOAD_TYPE_TXT_MSG
+        import time
+        
+        try:
+            src_hash = original_packet.payload[1]
+            
+            # Find the client in repeater's ACL to get shared secret
+            repeater_acl = self.acl_dict.get(self.repeater_hash)
+            if not repeater_acl:
+                logger.error("No repeater ACL found for CLI reply")
+                return
+            
+            client = None
+            for client_info in repeater_acl.get_all_clients():
+                pubkey = client_info.id.get_public_key()
+                if pubkey[0] == src_hash:
+                    client = client_info
+                    break
+            
+            if not client:
+                logger.error(f"Client 0x{src_hash:02X} not found in ACL for CLI reply")
+                return
+            
+            # Get shared secret from client
+            shared_secret = client.shared_secret
+            if not shared_secret or len(shared_secret) == 0:
+                logger.error(f"No shared secret for client 0x{src_hash:02X}")
+                return
+            
+            # Build reply packet payload
+            # Format: timestamp(4) + flags(1) + reply_text
+            timestamp = int(time.time())
+            TXT_TYPE_CLI_DATA = 0x01
+            flags = (TXT_TYPE_CLI_DATA << 2)  # Upper 6 bits are txt_type
+            
+            reply_bytes = reply_text.encode('utf-8')
+            plaintext = timestamp.to_bytes(4, 'little') + bytes([flags]) + reply_bytes
+            
+            # Create datagram using PacketBuilder
+            reply_packet = PacketBuilder.create_datagram(
+                ptype=PAYLOAD_TYPE_TXT_MSG,
+                dest=client.id,
+                local_identity=handler_info["identity"],
+                secret=shared_secret,
+                plaintext=plaintext,
+                route_type="flood" if client.out_path_len < 0 else "direct"
+            )
+            
+            # Add path for direct routing if available
+            if client.out_path_len >= 0 and len(client.out_path) > 0:
+                reply_packet.path = bytearray(client.out_path[:client.out_path_len])
+                reply_packet.path_len = client.out_path_len
+            
+            # Send with delay (CLI_REPLY_DELAY_MILLIS = 1500ms in C++)
+            CLI_REPLY_DELAY_MS = 1500
+            await asyncio.sleep(CLI_REPLY_DELAY_MS / 1000.0)
+            
+            await self._send_packet(reply_packet, wait_for_ack=False)
+            logger.info(f"CLI reply sent to 0x{src_hash:02X}: {reply_text[:50]}")
+            
+        except Exception as e:
+            logger.error(f"Error sending CLI reply: {e}", exc_info=True)
