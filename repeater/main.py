@@ -158,30 +158,15 @@ class RepeaterDaemon:
             else:
                 logger.info("Discovery response handler disabled")
 
-            # Create shared ACL for all identities
-            from repeater.handler_helpers.acl import ACL
-            
-            repeater_config = self.config.get("repeater", {})
-            security_config = repeater_config.get("security", {})
-            
-            shared_acl = ACL(
-                max_clients=security_config.get("max_clients", 50),
-                admin_password=security_config.get("admin_password", "admin123"),
-                guest_password=security_config.get("guest_password", "guest123"),
-                allow_read_only=security_config.get("allow_read_only", True),
-            )
-            self.acl = shared_acl
-            logger.info("Shared ACL initialized")
-            
-            # Create login helper with shared ACL
+            # Create login helper (will create per-identity ACLs)
             self.login_helper = LoginHelper(
                 identity_manager=self.identity_manager,
                 packet_injector=self.router.inject_packet,
-                acl=shared_acl,
                 log_fn=logger.info,
             )
             
             # Register default repeater identity
+            repeater_config = self.config.get("repeater", {})
             self.login_helper.register_identity(
                 name="repeater",
                 identity=self.local_identity,
@@ -200,12 +185,15 @@ class RepeaterDaemon:
             
             logger.info("Login processing helper initialized")
             
-            # Initialize text message helper (uses shared ACL as contacts)
+            # Initialize text message helper with per-identity ACLs
             self.text_helper = TextHelper(
                 identity_manager=self.identity_manager,
                 packet_injector=self.router.inject_packet,
-                acl=shared_acl,  # Use shared ACL as contacts database
+                acl_dict=self.login_helper.get_acl_dict(),  # Per-identity ACLs
                 log_fn=logger.info,
+                config_path=getattr(self, 'config_path', None),  # For CLI to save changes
+                config=self.config,  # For CLI to read/modify settings
+                save_config_callback=lambda: self._save_config(getattr(self, 'config_path', '/tmp/config.yaml')),  # For CLI to persist changes
             )
             
             # Register default repeater identity for text messages
@@ -229,6 +217,17 @@ class RepeaterDaemon:
 
         except Exception as e:
             logger.error(f"Failed to initialize dispatcher: {e}")
+            raise
+    
+    def _save_config(self, config_path: str):
+        """Save configuration to file (called by CLI when settings change)."""
+        import yaml
+        try:
+            with open(config_path, 'w') as f:
+                yaml.dump(self.config, f, default_flow_style=False)
+            logger.info(f"Configuration saved to {config_path}")
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
             raise
 
     async def _load_additional_identities(self):

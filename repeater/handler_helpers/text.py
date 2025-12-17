@@ -3,27 +3,39 @@ Text message (TXT_MSG) handling helper for pyMC Repeater.
 
 This module processes incoming text messages for all managed identities
 (repeater identity + identity manager identities).
+Also handles CLI commands for admin users on the repeater identity.
 """
 
 import asyncio
 import logging
 
 from pymc_core.node.handlers.text import TextMessageHandler
+from .repeater_cli import RepeaterCLI
 
 logger = logging.getLogger("TextHelper")
 
 
 class TextHelper:
 
-    def __init__(self, identity_manager, packet_injector=None, acl=None, log_fn=None):
+    def __init__(self, identity_manager, packet_injector=None, acl_dict=None, log_fn=None, 
+                 config_path: str = None, config: dict = None, save_config_callback=None):
 
         self.identity_manager = identity_manager
         self.packet_injector = packet_injector
         self.log_fn = log_fn or logger.info
-        self.acl = acl
+        self.acl_dict = acl_dict or {}  # Per-identity ACLs keyed by hash_byte
         
         # Dictionary of handlers keyed by dest_hash
         self.handlers = {}
+        
+        # Track repeater identity for CLI commands
+        self.repeater_hash = None
+        
+        # Initialize CLI handler if config provided
+        self.cli = None
+        if config_path and config and save_config_callback:
+            self.cli = RepeaterCLI(config_path, config, save_config_callback)
+            logger.info("Initialized CLI handler for repeater commands")
 
     def register_identity(
         self, 
@@ -33,12 +45,16 @@ class TextHelper:
         radio_config=None
     ):
 
-        if not self.acl:
-            logger.warning(f"Cannot register identity '{name}': no ACL configured")
+        hash_byte = identity.get_public_key()[0]
+        
+        # Get ACL for this identity
+        identity_acl = self.acl_dict.get(hash_byte)
+        if not identity_acl:
+            logger.warning(f"Cannot register identity '{name}': no ACL for hash 0x{hash_byte:02X}")
             return
         
-        # Create a contacts wrapper from ACL
-        acl_contacts = self._create_acl_contacts_wrapper()
+        # Create a contacts wrapper from this identity's ACL
+        acl_contacts = self._create_acl_contacts_wrapper(identity_acl)
         
         # Create TextMessageHandler for this identity
         handler = TextMessageHandler(
@@ -58,15 +74,20 @@ class TextHelper:
             "type": identity_type,
         }
         
+        # Track repeater identity for CLI commands
+        if identity_type == "repeater":
+            self.repeater_hash = hash_byte
+            logger.info(f"Set repeater hash for CLI: 0x{hash_byte:02X}")
+        
         logger.info(
             f"Registered {identity_type} '{name}' text handler: hash=0x{hash_byte:02X}"
         )
     
-    def _create_acl_contacts_wrapper(self):
+    def _create_acl_contacts_wrapper(self, acl):
 
         class ACLContactsWrapper:
-            def __init__(self, acl):
-                self._acl = acl
+            def __init__(self, identity_acl):
+                self._acl = identity_acl
             
             @property
             def contacts(self):
@@ -81,7 +102,7 @@ class TextHelper:
                     contact_list.append(ContactProxy(client_info))
                 return contact_list
         
-        return ACLContactsWrapper(self.acl)
+        return ACLContactsWrapper(acl)
 
     async def process_text_packet(self, packet):
 
@@ -99,7 +120,42 @@ class TextHelper:
                     f"dest=0x{dest_hash:02X}, src=0x{src_hash:02X}"
                 )
                 
-                # Call the handler
+                # Check if this is a CLI command to the repeater
+                if dest_hash == self.repeater_hash and self.cli:
+                    # Try to extract message text
+                    try:
+                        # Assume payload format: [dest_hash, src_hash, ...message...]
+                        message_bytes = packet.payload[2:]
+                        message_text = message_bytes.decode('utf-8', errors='ignore').strip()
+                        
+                        # Check if it's a CLI command
+                        if self._is_cli_command(message_text):
+                            # Check admin permission
+                            is_admin = self._check_admin_permission(src_hash)
+                            
+                            # Get sender's public key for CLI
+                            sender_pubkey = bytes([src_hash]) + b'\x00' * 31  # Placeholder
+                            
+                            # Handle CLI command
+                            reply = self.cli.handle_command(
+                                sender_pubkey=sender_pubkey,
+                                command=message_text,
+                                is_admin=is_admin
+                            )
+                            
+                            # Send reply through text handler
+                            logger.info(f"CLI command from 0x{src_hash:02X}: {message_text[:50]} -> {reply[:100]}")
+                            
+                            # TODO: Send reply packet
+                            # For now, just log it
+                            
+                            packet.mark_do_not_retransmit()
+                            return True
+                    except Exception as e:
+                        logger.error(f"Error processing CLI command: {e}")
+                        # Fall through to normal text handling
+                
+                # Normal text message handling
                 await handler_info["handler"](packet)
                 
                 # Call placeholder for custom processing
@@ -172,3 +228,37 @@ class TextHelper:
             }
             for hash_byte, info in self.handlers.items()
         ]
+    
+    def _is_cli_command(self, message: str) -> bool:
+        """Check if message looks like a CLI command."""
+        # Strip optional sequence prefix (XX|)
+        if len(message) > 4 and message[2] == '|':
+            message = message[3:].strip()
+        
+        # Check for known command prefixes
+        command_prefixes = [
+            "get ", "set ", "reboot", "advert", "clock", "time ",
+            "password ", "clear ", "ver", "board", "neighbors", "neighbor.",
+            "tempradio ", "setperm ", "region", "sensor ", "gps", "log ",
+            "stats-", "start ota"
+        ]
+        
+        return any(message.startswith(prefix) for prefix in command_prefixes)
+    
+    def _check_admin_permission(self, src_hash: int) -> bool:
+        """Check if sender has admin permissions (bit 0x01)."""
+        # Get the repeater's ACL
+        repeater_acl = self.acl_dict.get(self.repeater_hash)
+        if not repeater_acl:
+            return False
+        
+        # Get client by hash byte
+        clients = repeater_acl.get_all_clients()
+        for client_info in clients:
+            pubkey = client_info.id.get_public_key()
+            if pubkey[0] == src_hash:
+                # Check admin bit (0x01)
+                permissions = getattr(client_info, 'permissions', 0)
+                return (permissions & 0x01) != 0
+        
+        return False

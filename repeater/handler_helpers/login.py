@@ -13,42 +13,56 @@ logger = logging.getLogger("LoginHelper")
 
 
 class LoginHelper:
-    def __init__(self, identity_manager, packet_injector=None, acl=None, log_fn=None):
+    def __init__(self, identity_manager, packet_injector=None, log_fn=None):
 
         self.identity_manager = identity_manager
         self.packet_injector = packet_injector
         self.log_fn = log_fn or logger.info
-        self.acl = acl
         
         self.handlers = {}
+        self.acls = {}  # Per-identity ACLs keyed by hash_byte
 
     def register_identity(self, name: str, identity, identity_type: str = "room_server", config: dict = None):
-        if not self.acl:
-            logger.warning(f"Cannot register identity '{name}': no ACL configured")
-            return
-        
         config = config or {}
         
-        # Validate room servers have their own passwords
+        hash_byte = identity.get_public_key()[0]
+        
+        # Create ACL for this identity
+        from repeater.handler_helpers.acl import ACL
+        
+        # Get security config for this identity
         if identity_type == "room_server":
             security = config.get("security", {})
+            # Validate room servers have their own passwords
             if not security.get("admin_password") and not security.get("guest_password"):
                 logger.error(
                     f"Room server '{name}' MUST have security.admin_password or "
                     f"security.guest_password configured. Skipping registration."
                 )
                 return
+        else:
+            # Repeater uses security from its config
+            security = config.get("security", {})
         
-        hash_byte = identity.get_public_key()[0]
+        # Create ACL for this identity
+        identity_acl = ACL(
+            max_clients=security.get("max_clients", 50),
+            admin_password=security.get("admin_password", "admin123"),
+            guest_password=security.get("guest_password", "guest123"),
+            allow_read_only=security.get("allow_read_only", True),
+        )
         
-        # Create auth callback that includes identity context
+        self.acls[hash_byte] = identity_acl
+        logger.info(f"Created ACL for {identity_type} '{name}': hash=0x{hash_byte:02X}")
+        
+        # Create auth callback that uses this identity's ACL
         def auth_callback_with_context(client_identity, shared_secret, password, timestamp):
-            return self.acl.authenticate_client(
+            return identity_acl.authenticate_client(
                 client_identity=client_identity,
                 shared_secret=shared_secret,
                 password=password,
                 timestamp=timestamp,
-                target_identity_hash=hash_byte,  # Which identity is being logged into
+                target_identity_hash=hash_byte,
                 target_identity_name=name,
                 target_identity_config=config
             )
@@ -105,10 +119,22 @@ class LoginHelper:
         except Exception as e:
             logger.error(f"Error sending login response: {e}")
 
-    def get_acl(self):
-        return self.acl
+    def get_acl_dict(self):
+        """Return dictionary of ACLs keyed by identity hash."""
+        return self.acls
+    
+    def get_acl_for_identity(self, hash_byte: int):
+        """Get ACL for a specific identity."""
+        return self.acls.get(hash_byte)
 
-    def list_authenticated_clients(self):
-        if self.acl:
-            return self.acl.get_all_clients()
-        return []
+    def list_authenticated_clients(self, hash_byte: int = None):
+        """List authenticated clients for a specific identity or all identities."""
+        if hash_byte is not None:
+            acl = self.acls.get(hash_byte)
+            return acl.get_all_clients() if acl else []
+        
+        # Return clients from all ACLs
+        all_clients = []
+        for acl in self.acls.values():
+            all_clients.extend(acl.get_all_clients())
+        return all_clients
