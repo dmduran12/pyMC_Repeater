@@ -8,15 +8,16 @@ import cherrypy
 from repeater import __version__
 from repeater.config import update_global_flood_policy
 from .cad_calibration_engine import CADCalibrationEngine
+from pymc_core.protocol import CryptoUtils
 
 logger = logging.getLogger("HTTPServer")
 
 
-# system systems
+# System
 # GET /api/stats
 # GET /api/logs
 
-# # Packets
+# Packets
 # GET /api/packet_stats?hours=24
 # GET /api/recent_packets?limit=100
 # GET /api/filtered_packets?type=4&route=1&start_timestamp=X&end_timestamp=Y&limit=1000
@@ -44,6 +45,19 @@ logger = logging.getLogger("HTTPServer")
 # POST /api/save_cad_settings {"peak": 127, "min_val": 64}
 # GET  /api/cad_calibration_stream (SSE)
 
+# Identity Management
+# GET    /api/identities - List all identities
+# GET    /api/identity?name=<name> - Get specific identity
+# POST   /api/create_identity {"name": "...", "identity_key": "...", "type": "room_server", "settings": {...}}
+# PUT    /api/update_identity {"name": "...", "new_name": "...", "identity_key": "...", "settings": {...}}
+# DELETE /api/delete_identity?name=<name>
+# POST   /api/send_room_server_advert {"name": "..."} - Send advert for room server
+
+# ACL (Access Control List)
+# GET  /api/acl_info - Get ACL configuration and stats for all identities
+# GET  /api/acl_clients?identity_hash=0x42&identity_name=repeater - List authenticated clients
+# POST /api/acl_remove_client {"public_key": "...", "identity_hash": "0x42"} - Remove client from ACL
+# GET  /api/acl_stats - Overall ACL statistics
 
 # Common Parameters
 # hours - Time range (default: 24)
@@ -578,7 +592,17 @@ class APIEndpoints:
             import os
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
             with open(config_path, 'w') as f:
-                yaml.dump(self.config, f, default_flow_style=False, indent=2)
+                # Use safe_dump with explicit width to prevent line wrapping
+                # Setting width to a very large number prevents truncation of long strings like identity keys
+                yaml.safe_dump(
+                    self.config, 
+                    f, 
+                    default_flow_style=False, 
+                    indent=2, 
+                    width=1000000,  # Very large width to prevent any line wrapping
+                    sort_keys=False,
+                    allow_unicode=True
+                )
             logger.info(f"Configuration saved to {config_path}")
         except Exception as e:
             logger.error(f"Failed to save config to {config_path}: {e}")
@@ -1077,13 +1101,15 @@ class APIEndpoints:
         
         Body: {
             "name": "MyRoomServer",
-            "identity_key": "hex_key_string",
+            "identity_key": "hex_key_string",  # Optional - will be auto-generated if not provided
             "type": "room_server",
             "settings": {
                 "node_name": "My Room",
                 "latitude": 0.0,
                 "longitude": 0.0,
-                "disable_fwd": true
+                "disable_fwd": true,
+                "admin_password": "secret123",  # Optional - admin access password
+                "guest_password": "guest456"    # Optional - guest/read-only access password
             }
         }
         """
@@ -1105,8 +1131,18 @@ class APIEndpoints:
             if not name:
                 return self._error("Missing required field: name")
             
+            # Auto-generate identity key if not provided
+            key_was_generated = False
             if not identity_key:
-                return self._error("Missing required field: identity_key")
+                try:
+                    # Generate a new random 32-byte key (same method as config.py)
+                    random_key = os.urandom(32)
+                    identity_key = random_key.hex()
+                    key_was_generated = True
+                    logger.info(f"Auto-generated identity key for '{name}': {identity_key[:16]}...")
+                except Exception as gen_error:
+                    logger.error(f"Failed to auto-generate identity key: {gen_error}")
+                    return self._error(f"Failed to auto-generate identity key: {gen_error}")
             
             # Validate identity type
             if identity_type not in ["room_server"]:
@@ -1141,11 +1177,52 @@ class APIEndpoints:
             
             self._save_config_to_file(config_path)
             
-            logger.info(f"Created new identity: {name} (type: {identity_type})")
+            logger.info(f"Created new identity: {name} (type: {identity_type}){' with auto-generated key' if key_was_generated else ''}")
+            
+            # Hot reload - register identity immediately
+            registration_success = False
+            if self.daemon_instance:
+                try:
+                    from pymc_core import LocalIdentity
+                    
+                    # Create LocalIdentity from the key (convert hex string to bytes)
+                    if isinstance(identity_key, bytes):
+                        identity_key_bytes = identity_key
+                    elif isinstance(identity_key, str):
+                        try:
+                            identity_key_bytes = bytes.fromhex(identity_key)
+                        except ValueError as e:
+                            logger.error(f"Identity key for {name} is not valid hex string: {e}")
+                            identity_key_bytes = identity_key.encode('latin-1') if len(identity_key) == 32 else identity_key.encode('utf-8')
+                    else:
+                        logger.error(f"Unknown identity_key type: {type(identity_key)}")
+                        identity_key_bytes = bytes(identity_key)
+                    
+                    room_identity = LocalIdentity(seed=identity_key_bytes)
+                    
+                    # Use the consolidated registration method
+                    if hasattr(self.daemon_instance, '_register_identity_everywhere'):
+                        registration_success = self.daemon_instance._register_identity_everywhere(
+                            name=name,
+                            identity=room_identity,
+                            config=new_identity,
+                            identity_type=identity_type
+                        )
+                        if registration_success:
+                            logger.info(f"Hot reload: Registered identity '{name}' with all systems")
+                        else:
+                            logger.warning(f"Hot reload: Failed to register identity '{name}'")
+                    
+                except Exception as reg_error:
+                    logger.error(f"Failed to hot reload identity {name}: {reg_error}", exc_info=True)
+            
+            message = f"Identity '{name}' created successfully and activated immediately!" if registration_success else f"Identity '{name}' created successfully. Restart required to activate."
+            if key_was_generated:
+                message += " Identity key was auto-generated."
             
             return self._success(
                 new_identity,
-                message=f"Identity '{name}' created successfully. Restart required to activate."
+                message=message
             )
             
         except cherrypy.HTTPError:
@@ -1168,7 +1245,9 @@ class APIEndpoints:
             "settings": {  # Optional - update settings
                 "node_name": "Updated Room Name",
                 "latitude": 1.0,
-                "longitude": 2.0
+                "longitude": 2.0,
+                "admin_password": "newsecret",  # Optional - admin password
+                "guest_password": "newguest"    # Optional - guest password
             }
         }
         """
@@ -1233,9 +1312,56 @@ class APIEndpoints:
             
             logger.info(f"Updated identity: {name}")
             
+            # Hot reload - re-register identity if key changed or name changed
+            registration_success = False
+            needs_reload = "identity_key" in data or "new_name" in data
+            
+            if needs_reload and self.daemon_instance:
+                try:
+                    from pymc_core import LocalIdentity
+                    
+                    final_name = identity["name"]  # Could be new_name
+                    identity_key = identity["identity_key"]
+                    
+                    # Create LocalIdentity from the key (convert hex string to bytes)
+                    if isinstance(identity_key, bytes):
+                        identity_key_bytes = identity_key
+                    elif isinstance(identity_key, str):
+                        try:
+                            identity_key_bytes = bytes.fromhex(identity_key)
+                        except ValueError as e:
+                            logger.error(f"Identity key for {final_name} is not valid hex string: {e}")
+                            identity_key_bytes = identity_key.encode('latin-1') if len(identity_key) == 32 else identity_key.encode('utf-8')
+                    else:
+                        logger.error(f"Unknown identity_key type: {type(identity_key)}")
+                        identity_key_bytes = bytes(identity_key)
+                    
+                    room_identity = LocalIdentity(seed=identity_key_bytes)
+                    
+                    # Use the consolidated registration method
+                    if hasattr(self.daemon_instance, '_register_identity_everywhere'):
+                        registration_success = self.daemon_instance._register_identity_everywhere(
+                            name=final_name,
+                            identity=room_identity,
+                            config=identity,
+                            identity_type="room_server"
+                        )
+                        if registration_success:
+                            logger.info(f"Hot reload: Re-registered identity '{final_name}' with all systems")
+                        else:
+                            logger.warning(f"Hot reload: Failed to re-register identity '{final_name}'")
+                    
+                except Exception as reg_error:
+                    logger.error(f"Failed to hot reload identity {name}: {reg_error}", exc_info=True)
+            
+            if needs_reload:
+                message = f"Identity '{name}' updated successfully and changes applied immediately!" if registration_success else f"Identity '{name}' updated successfully. Restart required to apply changes."
+            else:
+                message = f"Identity '{name}' updated successfully (settings only, no reload needed)."
+            
             return self._success(
                 identity,
-                message=f"Identity '{name}' updated successfully. Restart required to apply changes."
+                message=message
             )
             
         except cherrypy.HTTPError:
@@ -1286,13 +1412,519 @@ class APIEndpoints:
             
             logger.info(f"Deleted identity: {name}")
             
+            unregister_success = False
+            if self.daemon_instance:
+                try:
+                    if hasattr(self.daemon_instance, 'identity_manager'):
+                        identity_manager = self.daemon_instance.identity_manager
+                        
+                        # Remove from named_identities dict
+                        if name in identity_manager.named_identities:
+                            del identity_manager.named_identities[name]
+                            logger.info(f"Removed identity {name} from named_identities")
+                            unregister_success = True
+                        
+                        # Note: We don't remove from identities dict (keyed by hash)
+                        # because we'd need to look up the hash first, and there could
+                        # be multiple identities with the same hash
+                        # Full cleanup happens on restart
+                    
+                except Exception as unreg_error:
+                    logger.error(f"Failed to unregister identity {name}: {unreg_error}", exc_info=True)
+            
+            message = f"Identity '{name}' deleted successfully and deactivated immediately!" if unregister_success else f"Identity '{name}' deleted successfully. Restart required to fully remove."
+            
             return self._success(
                 {"name": name},
-                message=f"Identity '{name}' deleted successfully. Restart required to apply changes."
+                message=message
             )
             
         except cherrypy.HTTPError:
             raise
         except Exception as e:
             logger.error(f"Error deleting identity: {e}")
+            return self._error(e)
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in()
+    def send_room_server_advert(self):
+        """
+        POST /api/send_room_server_advert - Send advert for a room server
+        
+        Body: {
+            "name": "MyRoomServer"
+        }
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            self._require_post()
+            
+            if not self.daemon_instance:
+                return self._error("Daemon not available")
+            
+            data = cherrypy.request.json or {}
+            name = data.get("name")
+            
+            if not name:
+                return self._error("Missing required field: name")
+            
+            # Get the identity from identity manager
+            if not hasattr(self.daemon_instance, 'identity_manager'):
+                return self._error("Identity manager not available")
+            
+            identity_manager = self.daemon_instance.identity_manager
+            identity_info = identity_manager.get_identity_by_name(name)
+            
+            if not identity_info:
+                return self._error(f"Room server '{name}' not found or not registered")
+            
+            identity, config, identity_type = identity_info
+            
+            if identity_type != "room_server":
+                return self._error(f"Identity '{name}' is not a room server")
+            
+            # Get settings from config
+            settings = config.get("settings", {})
+            node_name = settings.get("node_name", name)
+            latitude = settings.get("latitude", 0.0)
+            longitude = settings.get("longitude", 0.0)
+            disable_fwd = settings.get("disable_fwd", False)
+            
+            # Send the advert asynchronously
+            if self.event_loop is None:
+                return self._error("Event loop not available")
+            
+            import asyncio
+            future = asyncio.run_coroutine_threadsafe(
+                self._send_room_server_advert_async(
+                    identity=identity,
+                    node_name=node_name,
+                    latitude=latitude,
+                    longitude=longitude,
+                    disable_fwd=disable_fwd
+                ),
+                self.event_loop
+            )
+            
+            result = future.result(timeout=10)
+            
+            if result:
+                return self._success({
+                    "name": name,
+                    "node_name": node_name,
+                    "latitude": latitude,
+                    "longitude": longitude
+                }, message=f"Advert sent for room server '{node_name}'")
+            else:
+                return self._error(f"Failed to send advert for room server '{name}'")
+            
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error sending room server advert: {e}", exc_info=True)
+            return self._error(e)
+    
+    async def _send_room_server_advert_async(self, identity, node_name, latitude, longitude, disable_fwd):
+        """Send advert for a room server identity"""
+        try:
+            from pymc_core.protocol import PacketBuilder
+            from pymc_core.protocol.constants import ADVERT_FLAG_HAS_NAME, ADVERT_FLAG_IS_ROOM_SERVER
+            
+            if not self.daemon_instance or not self.daemon_instance.dispatcher:
+                logger.error("Cannot send advert: dispatcher not initialized")
+                return False
+            
+            # Build flags - just use HAS_NAME for room servers
+            flags = ADVERT_FLAG_IS_ROOM_SERVER | ADVERT_FLAG_HAS_NAME
+            
+            packet = PacketBuilder.create_advert(
+                local_identity=identity,
+                name=node_name,
+                lat=latitude,
+                lon=longitude,
+                feature1=0,
+                feature2=0,
+                flags=flags,
+                route_type="flood",
+            )
+            
+            # Send via dispatcher
+            await self.daemon_instance.dispatcher.send_packet(packet, wait_for_ack=False)
+            
+            # Mark as seen to prevent re-forwarding
+            if self.daemon_instance.repeater_handler:
+                self.daemon_instance.repeater_handler.mark_seen(packet)
+                logger.debug(f"Marked room server advert '{node_name}' as seen in duplicate cache")
+            
+            logger.info(f"Sent flood advert for room server '{node_name}' at ({latitude:.6f}, {longitude:.6f})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send room server advert: {e}", exc_info=True)
+            return False
+
+    # ========== ACL (Access Control List) Endpoints ==========
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def acl_info(self):
+        """
+        GET /api/acl_info - Get ACL configuration and statistics
+        
+        Returns ACL settings for all registered identities including:
+        - Identity name, type, and hash
+        - Max clients allowed
+        - Number of authenticated clients
+        - Password configuration status
+        - Read-only access setting
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            if not self.daemon_instance or not hasattr(self.daemon_instance, 'login_helper'):
+                return self._error("Login helper not available")
+            
+            login_helper = self.daemon_instance.login_helper
+            identity_manager = self.daemon_instance.identity_manager
+            
+            acl_dict = login_helper.get_acl_dict()
+            
+            acl_info_list = []
+            
+            # Add repeater identity
+            if self.daemon_instance.local_identity:
+                repeater_hash = self.daemon_instance.local_identity.get_public_key()[0]
+                repeater_acl = acl_dict.get(repeater_hash)
+                
+                if repeater_acl:
+                    acl_info_list.append({
+                        "name": "repeater",
+                        "type": "repeater",
+                        "hash": f"0x{repeater_hash:02X}",
+                        "max_clients": repeater_acl.max_clients,
+                        "authenticated_clients": repeater_acl.get_num_clients(),
+                        "has_admin_password": bool(repeater_acl.admin_password),
+                        "has_guest_password": bool(repeater_acl.guest_password),
+                        "allow_read_only": repeater_acl.allow_read_only
+                    })
+            
+            # Add room server identities
+            for name, identity, config in identity_manager.get_identities_by_type("room_server"):
+                hash_byte = identity.get_public_key()[0]
+                acl = acl_dict.get(hash_byte)
+                
+                if acl:
+                    acl_info_list.append({
+                        "name": name,
+                        "type": "room_server",
+                        "hash": f"0x{hash_byte:02X}",
+                        "max_clients": acl.max_clients,
+                        "authenticated_clients": acl.get_num_clients(),
+                        "has_admin_password": bool(acl.admin_password),
+                        "has_guest_password": bool(acl.guest_password),
+                        "allow_read_only": acl.allow_read_only
+                    })
+            
+            return self._success({
+                "acls": acl_info_list,
+                "total_identities": len(acl_info_list),
+                "total_authenticated_clients": sum(a["authenticated_clients"] for a in acl_info_list)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting ACL info: {e}")
+            return self._error(e)
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def acl_clients(self, identity_hash=None, identity_name=None):
+        """
+        GET /api/acl_clients - Get authenticated clients
+        
+        Query parameters:
+        - identity_hash: Filter by identity hash (e.g., "0x42")
+        - identity_name: Filter by identity name (e.g., "repeater" or room server name)
+        
+        Returns list of authenticated clients with:
+        - Public key (truncated)
+        - Full address
+        - Permissions (admin/guest)
+        - Last activity timestamp
+        - Last login timestamp
+        - Identity they're authenticated to
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            if not self.daemon_instance or not hasattr(self.daemon_instance, 'login_helper'):
+                return self._error("Login helper not available")
+            
+            login_helper = self.daemon_instance.login_helper
+            identity_manager = self.daemon_instance.identity_manager
+            acl_dict = login_helper.get_acl_dict()
+            
+            # Build a mapping of hash to identity info
+            identity_map = {}
+            
+            # Add repeater
+            if self.daemon_instance.local_identity:
+                repeater_hash = self.daemon_instance.local_identity.get_public_key()[0]
+                identity_map[repeater_hash] = {
+                    "name": "repeater",
+                    "type": "repeater",
+                    "hash": f"0x{repeater_hash:02X}"
+                }
+            
+            # Add room servers
+            for name, identity, config in identity_manager.get_identities_by_type("room_server"):
+                hash_byte = identity.get_public_key()[0]
+                identity_map[hash_byte] = {
+                    "name": name,
+                    "type": "room_server",
+                    "hash": f"0x{hash_byte:02X}"
+                }
+            
+            # Filter by identity if requested
+            target_hash = None
+            if identity_hash:
+                # Convert "0x42" to int
+                try:
+                    target_hash = int(identity_hash, 16) if identity_hash.startswith("0x") else int(identity_hash)
+                except ValueError:
+                    return self._error(f"Invalid identity_hash format: {identity_hash}")
+            elif identity_name:
+                # Find hash by name
+                for hash_byte, info in identity_map.items():
+                    if info["name"] == identity_name:
+                        target_hash = hash_byte
+                        break
+                if target_hash is None:
+                    return self._error(f"Identity '{identity_name}' not found")
+            
+            # Collect clients
+            clients_list = []
+            
+            logger.info(f"ACL dict has {len(acl_dict)} identities")
+            
+            for hash_byte, acl in acl_dict.items():
+                # Skip if filtering by specific identity
+                if target_hash is not None and hash_byte != target_hash:
+                    continue
+                
+                identity_info = identity_map.get(hash_byte, {
+                    "name": "unknown",
+                    "type": "unknown",
+                    "hash": f"0x{hash_byte:02X}"
+                })
+                
+                all_clients = acl.get_all_clients()
+                logger.info(f"Identity {identity_info['name']} (0x{hash_byte:02X}) has {len(all_clients)} clients")
+                
+                for client in all_clients:
+                    try:
+                        pub_key = client.id.get_public_key()
+                        
+                        # Compute address from public key (first byte of SHA256)
+                        address_bytes = CryptoUtils.sha256(pub_key)[:1]
+                        
+                        clients_list.append({
+                            "public_key": pub_key[:8].hex() + "..." + pub_key[-4:].hex(),
+                            "public_key_full": pub_key.hex(),
+                            "address": address_bytes.hex(),
+                            "permissions": "admin" if client.is_admin() else "guest",
+                            "last_activity": client.last_activity,
+                            "last_login_success": client.last_login_success,
+                            "last_timestamp": client.last_timestamp,
+                            "identity_name": identity_info["name"],
+                            "identity_type": identity_info["type"],
+                            "identity_hash": identity_info["hash"]
+                        })
+                    except Exception as client_error:
+                        logger.error(f"Error processing client: {client_error}", exc_info=True)
+                        continue
+            
+            logger.info(f"Returning {len(clients_list)} total clients")
+            
+            return self._success({
+                "clients": clients_list,
+                "count": len(clients_list),
+                "filter": {
+                    "identity_hash": identity_hash,
+                    "identity_name": identity_name
+                } if (identity_hash or identity_name) else None
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting ACL clients: {e}")
+            return self._error(e)
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in()
+    def acl_remove_client(self):
+        """
+        POST /api/acl_remove_client - Remove an authenticated client from ACL
+        
+        Body: {
+            "public_key": "full_hex_string",
+            "identity_hash": "0x42"  # Optional - if not provided, removes from all ACLs
+        }
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            self._require_post()
+            
+            if not self.daemon_instance or not hasattr(self.daemon_instance, 'login_helper'):
+                return self._error("Login helper not available")
+            
+            data = cherrypy.request.json or {}
+            public_key_hex = data.get("public_key")
+            identity_hash_str = data.get("identity_hash")
+            
+            if not public_key_hex:
+                return self._error("Missing required field: public_key")
+            
+            # Convert hex to bytes
+            try:
+                public_key = bytes.fromhex(public_key_hex)
+            except ValueError:
+                return self._error("Invalid public_key format (must be hex string)")
+            
+            login_helper = self.daemon_instance.login_helper
+            acl_dict = login_helper.get_acl_dict()
+            
+            # Determine which ACLs to remove from
+            target_hashes = []
+            if identity_hash_str:
+                try:
+                    target_hash = int(identity_hash_str, 16) if identity_hash_str.startswith("0x") else int(identity_hash_str)
+                    target_hashes = [target_hash]
+                except ValueError:
+                    return self._error(f"Invalid identity_hash format: {identity_hash_str}")
+            else:
+                # Remove from all ACLs
+                target_hashes = list(acl_dict.keys())
+            
+            removed_count = 0
+            removed_from = []
+            
+            for hash_byte in target_hashes:
+                acl = acl_dict.get(hash_byte)
+                if acl and acl.remove_client(public_key):
+                    removed_count += 1
+                    removed_from.append(f"0x{hash_byte:02X}")
+            
+            if removed_count > 0:
+                logger.info(f"Removed client {public_key[:6].hex()}... from {removed_count} ACL(s)")
+                return self._success({
+                    "removed_count": removed_count,
+                    "removed_from": removed_from
+                }, message=f"Client removed from {removed_count} ACL(s)")
+            else:
+                return self._error("Client not found in any ACL")
+            
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error removing client from ACL: {e}")
+            return self._error(e)
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def acl_stats(self):
+        """
+        GET /api/acl_stats - Get overall ACL statistics
+        
+        Returns:
+        - Total identities with ACLs
+        - Total authenticated clients across all identities
+        - Breakdown by identity type
+        - Admin vs guest counts
+        """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            if not self.daemon_instance or not hasattr(self.daemon_instance, 'login_helper'):
+                return self._error("Login helper not available")
+            
+            login_helper = self.daemon_instance.login_helper
+            identity_manager = self.daemon_instance.identity_manager
+            acl_dict = login_helper.get_acl_dict()
+            
+            total_clients = 0
+            admin_count = 0
+            guest_count = 0
+            
+            identity_stats = {
+                "repeater": {"count": 0, "clients": 0},
+                "room_server": {"count": 0, "clients": 0}
+            }
+            
+            # Count repeater
+            if self.daemon_instance.local_identity:
+                repeater_hash = self.daemon_instance.local_identity.get_public_key()[0]
+                repeater_acl = acl_dict.get(repeater_hash)
+                if repeater_acl:
+                    identity_stats["repeater"]["count"] = 1
+                    clients = repeater_acl.get_all_clients()
+                    identity_stats["repeater"]["clients"] = len(clients)
+                    total_clients += len(clients)
+                    
+                    for client in clients:
+                        if client.is_admin():
+                            admin_count += 1
+                        else:
+                            guest_count += 1
+            
+            # Count room servers
+            room_servers = identity_manager.get_identities_by_type("room_server")
+            identity_stats["room_server"]["count"] = len(room_servers)
+            
+            for name, identity, config in room_servers:
+                hash_byte = identity.get_public_key()[0]
+                acl = acl_dict.get(hash_byte)
+                if acl:
+                    clients = acl.get_all_clients()
+                    identity_stats["room_server"]["clients"] += len(clients)
+                    total_clients += len(clients)
+                    
+                    for client in clients:
+                        if client.is_admin():
+                            admin_count += 1
+                        else:
+                            guest_count += 1
+            
+            return self._success({
+                "total_identities": len(acl_dict),
+                "total_clients": total_clients,
+                "admin_clients": admin_count,
+                "guest_clients": guest_count,
+                "by_identity_type": identity_stats
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting ACL stats: {e}")
             return self._error(e)

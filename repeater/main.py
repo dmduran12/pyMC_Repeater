@@ -274,11 +274,27 @@ class RepeaterDaemon:
                     )
                     continue
                 
-                # Create the identity
-                room_identity = LocalIdentity(seed=identity_key)
+                # Convert identity_key to bytes if it's a hex string
+                if isinstance(identity_key, bytes):
+                    identity_key_bytes = identity_key
+                elif isinstance(identity_key, str):
+                    try:
+                        identity_key_bytes = bytes.fromhex(identity_key)
+                        if len(identity_key_bytes) != 32:
+                            logger.error(f"Identity key for '{name}' is invalid length: {len(identity_key_bytes)} bytes (expected 32)")
+                            continue
+                    except ValueError as e:
+                        logger.error(f"Identity key for '{name}' is not valid hex: {e}")
+                        continue
+                else:
+                    logger.error(f"Identity key for '{name}' has unknown type: {type(identity_key)}")
+                    continue
                 
-                # Register with the manager
-                success = self.identity_manager.register_identity(
+                # Create the identity
+                room_identity = LocalIdentity(seed=identity_key_bytes)
+                
+                # Register with the manager and all helpers
+                success = self._register_identity_everywhere(
                     name=name,
                     identity=room_identity,
                     config=room_config,
@@ -298,6 +314,54 @@ class RepeaterDaemon:
         # Summary logging
         total_identities = len(self.identity_manager.list_identities())
         logger.info(f"Identity manager loaded {total_identities} total identities")
+
+    def _register_identity_everywhere(
+        self,
+        name: str,
+        identity,
+        config: dict,
+        identity_type: str
+    ) -> bool:
+        """
+        Register an identity with the manager and all helpers in one place.
+        This is the single source of truth for identity registration.
+        """
+        # Register with identity manager
+        success = self.identity_manager.register_identity(
+            name=name,
+            identity=identity,
+            config=config,
+            identity_type=identity_type
+        )
+        
+        if not success:
+            return False
+        
+        # Register with all helpers
+        if self.login_helper:
+            self.login_helper.register_identity(
+                name=name,
+                identity=identity,
+                identity_type=identity_type,
+                config=config
+            )
+        
+        if self.text_helper:
+            self.text_helper.register_identity(
+                name=name,
+                identity=identity,
+                identity_type=identity_type,
+                radio_config=self.config.get("radio", {})
+            )
+        
+        if self.protocol_request_helper:
+            self.protocol_request_helper.register_identity(
+                name=name,
+                identity=identity,
+                identity_type=identity_type
+            )
+        
+        return True
 
     async def _router_callback(self, packet):
         """
