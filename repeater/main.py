@@ -6,7 +6,7 @@ import sys
 from repeater.config import get_radio_for_board, load_config
 from repeater.engine import RepeaterHandler
 from repeater.web.http_server import HTTPStatsServer, _log_buffer
-from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper
+from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper, TextHelper
 from repeater.packet_router import PacketRouter
 from repeater.identity_manager import IdentityManager
 
@@ -29,6 +29,7 @@ class RepeaterDaemon:
         self.advert_helper = None
         self.discovery_helper = None
         self.login_helper = None
+        self.text_helper = None
         self.acl = None
         self.router = None
 
@@ -184,14 +185,47 @@ class RepeaterDaemon:
             self.login_helper.register_identity(
                 name="repeater",
                 identity=self.local_identity,
-                identity_type="repeater"
+                identity_type="repeater",
+                config=repeater_config  # Pass repeater config (includes security settings)
             )
             
-            # Register room server identities
+            # Register room server identities with their configs
             for name, identity, config in self.identity_manager.get_identities_by_type("room_server"):
-                self.login_helper.register_identity(name, identity, identity_type="room_server")
+                self.login_helper.register_identity(
+                    name=name, 
+                    identity=identity, 
+                    identity_type="room_server",
+                    config=config  # Pass room-specific config
+                )
             
             logger.info("Login processing helper initialized")
+            
+            # Initialize text message helper (uses shared ACL as contacts)
+            self.text_helper = TextHelper(
+                identity_manager=self.identity_manager,
+                packet_injector=self.router.inject_packet,
+                acl=shared_acl,  # Use shared ACL as contacts database
+                log_fn=logger.info,
+            )
+            
+            # Register default repeater identity for text messages
+            self.text_helper.register_identity(
+                name="repeater",
+                identity=self.local_identity,
+                identity_type="repeater",
+                radio_config=self.config.get("radio", {})
+            )
+            
+            # Register room server identities for text messages
+            for name, identity, config in self.identity_manager.get_identities_by_type("room_server"):
+                self.text_helper.register_identity(
+                    name=name,
+                    identity=identity,
+                    identity_type="room_server",
+                    radio_config=self.config.get("radio", {})
+                )
+            
+            logger.info("Text message processing helper initialized")
 
         except Exception as e:
             logger.error(f"Failed to initialize dispatcher: {e}")
@@ -250,6 +284,32 @@ class RepeaterDaemon:
                 await self.router.enqueue(packet)
             except Exception as e:
                 logger.error(f"Error enqueuing packet in router: {e}", exc_info=True)
+    
+    def register_text_handler_for_identity(
+        self, 
+        name: str, 
+        identity, 
+        identity_type: str = "room_server",
+        radio_config: dict = None
+    ):
+
+        if not self.text_helper:
+            logger.warning("Text helper not initialized, cannot register identity")
+            return False
+            
+        try:
+            self.text_helper.register_identity(
+                name=name,
+                identity=identity,
+                identity_type=identity_type,
+                radio_config=radio_config or self.config.get("radio", {}),
+            )
+            logger.info(f"Registered text handler for {identity_type} '{name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to register text handler for '{name}': {e}")
+            return False
+    
     def get_stats(self) -> dict:
         stats = {}
         

@@ -63,7 +63,6 @@ mesh:
 # Multiple Identity Configuration (Optional)
 # Define additional identities for the repeater to manage
 # Each identity operates independently with its own key pair and configuration
-# Note: All identities share the same ACL (security settings from repeater.security)
 identities:
   # Room Server Identities
   # Each room server acts as a separate logical node on the mesh
@@ -78,7 +77,10 @@ identities:
     #     node_name: "Test BBS Room"
     #     latitude: 0.0
     #     longitude: 0.0
-    #     disable_fwd: true  # Room servers typically don't forward
+    #   
+    #   security:
+    #     admin_password: "room_admin_password"
+    #     guest_password: "room_guest_password"
     
     # Add more room servers as needed
     # - name: "SocialHub"
@@ -86,6 +88,9 @@ identities:
     #   type: "room_server"
     #   settings:
     #     node_name: "Social Hub"
+    #   security:
+    #     admin_password: "social_admin_123"
+    #     guest_password: "social_guest_123"
     
 radio:
   # Frequency in Hz (869.618 MHz for EU)

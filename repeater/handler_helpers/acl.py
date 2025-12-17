@@ -1,10 +1,3 @@
-"""
-Access Control List for pyMC Repeater.
-
-Manages authenticated clients with permission-based access control.
-Shared across all identities (repeater and room servers).
-"""
-
 import logging
 import time
 from typing import Dict, Optional
@@ -56,8 +49,40 @@ class ACL:
         self.clients: Dict[bytes, ClientInfo] = {}
 
     def authenticate_client(
-        self, client_identity: Identity, shared_secret: bytes, password: str, timestamp: int
+        self, 
+        client_identity: Identity, 
+        shared_secret: bytes, 
+        password: str, 
+        timestamp: int,
+        target_identity_hash: int = None,
+        target_identity_name: str = None,
+        target_identity_config: dict = None
     ) -> tuple[bool, int]:
+
+        target_identity_config = target_identity_config or {}
+        
+        # Check for identity-specific passwords (required for room servers)
+        identity_security = target_identity_config.get("security", {})
+        
+        # Determine if this is a room server by checking the type field
+        identity_type = target_identity_config.get("type", "")
+        is_room_server = identity_type == "room_server"
+        
+        if is_room_server:
+            # Room servers MUST define their own passwords - no fallback
+            admin_pwd = identity_security.get("admin_password")
+            guest_pwd = identity_security.get("guest_password")
+            
+            if not admin_pwd and not guest_pwd:
+                logger.error(f"Room server '{target_identity_name}' has no passwords configured!")
+                return False, 0
+        else:
+            # Repeater uses global passwords
+            admin_pwd = self.admin_password
+            guest_pwd = self.guest_password
+        
+        if target_identity_name:
+            logger.debug(f"Authenticating for identity '{target_identity_name}' (room_server={is_room_server})")
  
         pub_key = client_identity.get_public_key()[:PUB_KEY_SIZE]
 
@@ -74,14 +99,14 @@ class ACL:
             return True, client.permissions
 
         permissions = 0
-        if password == self.admin_password:
+        if admin_pwd and password == admin_pwd:
             permissions = PERM_ACL_ADMIN
-            logger.info("Admin password validated")
-        elif self.guest_password and password == self.guest_password:
+            logger.info(f"Admin password validated for '{target_identity_name or 'unknown'}'")
+        elif guest_pwd and password == guest_pwd:
             permissions = PERM_ACL_READ_WRITE
-            logger.info("Guest password validated")
+            logger.info(f"Guest password validated for '{target_identity_name or 'unknown'}'")
         else:
-            logger.info("Invalid password")
+            logger.info(f"Invalid password for '{target_identity_name or 'unknown'}'")
             return False, 0
 
         client = self.clients.get(pub_key)

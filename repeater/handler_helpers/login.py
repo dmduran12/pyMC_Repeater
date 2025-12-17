@@ -13,8 +13,6 @@ logger = logging.getLogger("LoginHelper")
 
 
 class LoginHelper:
-    """Helper class for processing ANON_REQ login packets in the repeater."""
-
     def __init__(self, identity_manager, packet_injector=None, acl=None, log_fn=None):
 
         self.identity_manager = identity_manager
@@ -24,24 +22,50 @@ class LoginHelper:
         
         self.handlers = {}
 
-    def register_identity(self, name: str, identity, identity_type: str = "room_server"):
-
+    def register_identity(self, name: str, identity, identity_type: str = "room_server", config: dict = None):
         if not self.acl:
             logger.warning(f"Cannot register identity '{name}': no ACL configured")
             return
         
+        config = config or {}
+        
+        # Validate room servers have their own passwords
+        if identity_type == "room_server":
+            security = config.get("security", {})
+            if not security.get("admin_password") and not security.get("guest_password"):
+                logger.error(
+                    f"Room server '{name}' MUST have security.admin_password or "
+                    f"security.guest_password configured. Skipping registration."
+                )
+                return
+        
+        hash_byte = identity.get_public_key()[0]
+        
+        # Create auth callback that includes identity context
+        def auth_callback_with_context(client_identity, shared_secret, password, timestamp):
+            return self.acl.authenticate_client(
+                client_identity=client_identity,
+                shared_secret=shared_secret,
+                password=password,
+                timestamp=timestamp,
+                target_identity_hash=hash_byte,  # Which identity is being logged into
+                target_identity_name=name,
+                target_identity_config=config
+            )
+        
         handler = LoginServerHandler(
             local_identity=identity,
             log_fn=self.log_fn,
-            authenticate_callback=self.acl.authenticate_client,
+            authenticate_callback=auth_callback_with_context,
         )
         
         handler.set_send_packet_callback(self._send_packet_with_delay)
         
-        hash_byte = identity.get_public_key()[0]
         self.handlers[hash_byte] = handler
         
         logger.info(f"Registered {identity_type} '{name}' login handler: hash=0x{hash_byte:02X}")
+
+
 
     async def process_login_packet(self, packet):
 
