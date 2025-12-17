@@ -1291,7 +1291,8 @@ class APIEndpoints:
                     return self._error(f"Identity with name '{new_name}' already exists")
                 identity["name"] = new_name
             
-            if "identity_key" in data:
+            # Only update identity_key if a non-empty value is provided
+            if "identity_key" in data and data["identity_key"]:
                 identity["identity_key"] = data["identity_key"]
             
             if "settings" in data:
@@ -1314,7 +1315,8 @@ class APIEndpoints:
             
             # Hot reload - re-register identity if key changed or name changed
             registration_success = False
-            needs_reload = "identity_key" in data or "new_name" in data
+            # Only reload if identity_key was actually provided and not empty, or if name changed
+            needs_reload = (data.get("identity_key") or "new_name" in data)
             
             if needs_reload and self.daemon_instance:
                 try:

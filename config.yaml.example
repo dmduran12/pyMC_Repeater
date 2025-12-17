@@ -77,8 +77,6 @@ identities:
     #     node_name: "Test BBS Room"
     #     latitude: 0.0
     #     longitude: 0.0
-    #   
-    #   security:
     #     admin_password: "room_admin_password"
     #     guest_password: "room_guest_password"
     
@@ -88,7 +86,8 @@ identities:
     #   type: "room_server"
     #   settings:
     #     node_name: "Social Hub"
-    #   security:
+    #     latitude: 0.0
+    #     longitude: 0.0
     #     admin_password: "social_admin_123"
     #     guest_password: "social_guest_123"
     

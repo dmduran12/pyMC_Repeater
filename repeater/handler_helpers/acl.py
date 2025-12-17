@@ -62,22 +62,23 @@ class ACL:
         target_identity_config = target_identity_config or {}
         
         # Check for identity-specific passwords (required for room servers)
-        identity_security = target_identity_config.get("security", {})
+        identity_settings = target_identity_config.get("settings", {})
         
         # Determine if this is a room server by checking the type field
         identity_type = target_identity_config.get("type", "")
         is_room_server = identity_type == "room_server"
         
         if is_room_server:
-            # Room servers MUST define their own passwords - no fallback
-            admin_pwd = identity_security.get("admin_password")
-            guest_pwd = identity_security.get("guest_password")
+            # Room servers use passwords from their settings section only
+            # Empty strings are treated as "not set"
+            admin_pwd = identity_settings.get("admin_password") or None
+            guest_pwd = identity_settings.get("guest_password") or None
             
             if not admin_pwd and not guest_pwd:
-                logger.error(f"Room server '{target_identity_name}' has no passwords configured!")
+                logger.error(f"Room server '{target_identity_name}' has no passwords configured! Set admin_password and/or guest_password in settings.")
                 return False, 0
         else:
-            # Repeater uses global passwords
+            # Repeater uses global passwords from its own security section
             admin_pwd = self.admin_password
             guest_pwd = self.guest_password
         

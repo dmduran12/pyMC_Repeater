@@ -32,24 +32,44 @@ class LoginHelper:
         
         # Get security config for this identity
         if identity_type == "room_server":
-            security = config.get("security", {})
-            # Validate room servers have their own passwords
-            if not security.get("admin_password") and not security.get("guest_password"):
+            # Room servers use passwords from their settings section only
+            settings = config.get("settings", {})
+            
+            # Empty strings ('') are treated as "not set" by using 'or None'
+            admin_password = settings.get("admin_password") or None
+            guest_password = settings.get("guest_password") or None
+            
+            # Validate room servers have passwords configured
+            if not admin_password and not guest_password:
                 logger.error(
-                    f"Room server '{name}' MUST have security.admin_password or "
-                    f"security.guest_password configured. Skipping registration."
+                    f"Room server '{name}' MUST have admin_password or guest_password configured. "
+                    f"Add them to 'settings' section. Skipping registration."
                 )
                 return
+            
+            # Use configured passwords from settings
+            final_security = {
+                "max_clients": settings.get("max_clients", 50),
+                "admin_password": admin_password,
+                "guest_password": guest_password,
+                "allow_read_only": settings.get("allow_read_only", True),
+            }
         else:
             # Repeater uses security from its config
             security = config.get("security", {})
+            final_security = {
+                "max_clients": security.get("max_clients", 50),
+                "admin_password": security.get("admin_password", "admin123"),
+                "guest_password": security.get("guest_password", "guest123"),
+                "allow_read_only": security.get("allow_read_only", True),
+            }
         
         # Create ACL for this identity
         identity_acl = ACL(
-            max_clients=security.get("max_clients", 50),
-            admin_password=security.get("admin_password", "admin123"),
-            guest_password=security.get("guest_password", "guest123"),
-            allow_read_only=security.get("allow_read_only", True),
+            max_clients=final_security["max_clients"],
+            admin_password=final_security["admin_password"],
+            guest_password=final_security["guest_password"],
+            allow_read_only=final_security["allow_read_only"],
         )
         
         self.acls[hash_byte] = identity_acl
