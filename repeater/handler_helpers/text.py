@@ -120,41 +120,7 @@ class TextHelper:
                     f"dest=0x{dest_hash:02X}, src=0x{src_hash:02X}"
                 )
                 
-                # Check if this is a CLI command to the repeater
-                if dest_hash == self.repeater_hash and self.cli:
-                    # Try to extract message text
-                    try:
-                        # Assume payload format: [dest_hash, src_hash, ...message...]
-                        message_bytes = packet.payload[2:]
-                        message_text = message_bytes.decode('utf-8', errors='ignore').strip()
-                        
-                        # Check if it's a CLI command
-                        if self._is_cli_command(message_text):
-                            # Check admin permission
-                            is_admin = self._check_admin_permission(src_hash)
-                            
-                            # Get sender's public key for CLI
-                            sender_pubkey = bytes([src_hash]) + b'\x00' * 31  # Placeholder
-                            
-                            # Handle CLI command
-                            reply = self.cli.handle_command(
-                                sender_pubkey=sender_pubkey,
-                                command=message_text,
-                                is_admin=is_admin
-                            )
-                            
-                            logger.info(f"CLI command from 0x{src_hash:02X}: {message_text[:50]} -> {reply[:100]}")
-                            
-                            # Send reply back to sender using TXT_MSG
-                            await self._send_cli_reply(packet, reply, handler_info)
-                            
-                            packet.mark_do_not_retransmit()
-                            return True
-                    except Exception as e:
-                        logger.error(f"Error processing CLI command: {e}")
-                        # Fall through to normal text handling
-                
-                # Normal text message handling
+                # Let handler decrypt the message first
                 await handler_info["handler"](packet)
                 
                 # Call placeholder for custom processing
@@ -194,12 +160,53 @@ class TextHelper:
             f"from 0x{src_hash:02X}"
         )
         
-        # Example: Extract decrypted message if available
+        # Extract decrypted message if available
         if hasattr(packet, "decrypted") and packet.decrypted:
             message_text = packet.decrypted.get("text", "<unknown>")
+            
+            # Clean message text - remove null bytes and trailing whitespace
+            message_text = message_text.rstrip('\x00').rstrip()
+            
             logger.info(
                 f"[{identity_type}:{identity_name}] Message: {message_text}"
             )
+            
+            # Check if this is a CLI command to the repeater (AFTER decryption)
+            if dest_hash == self.repeater_hash and self.cli and self._is_cli_command(message_text):
+                try:
+                    # Check admin permission
+                    is_admin = self._check_admin_permission(src_hash)
+                    
+                    # If not admin, log and return without sending reply
+                    if not is_admin:
+                        logger.warning(f"CLI command denied from 0x{src_hash:02X} (not admin): {message_text[:50]}")
+                        return
+                    
+                    # Get client for full public key
+                    repeater_acl = self.acl_dict.get(self.repeater_hash)
+                    sender_pubkey = bytes([src_hash]) + b'\x00' * 31  # Default
+                    if repeater_acl:
+                        for client_info in repeater_acl.get_all_clients():
+                            if client_info.id.get_public_key()[0] == src_hash:
+                                sender_pubkey = client_info.id.get_public_key()
+                                break
+                    
+                    # Handle CLI command
+                    reply = self.cli.handle_command(
+                        sender_pubkey=sender_pubkey,
+                        command=message_text,
+                        is_admin=is_admin
+                    )
+                    
+                    logger.info(f"CLI command from 0x{src_hash:02X}: {message_text[:50]} -> {reply[:100]}")
+                    
+                    # Send reply back to sender
+                    handler_info = self.handlers.get(dest_hash)
+                    if handler_info:
+                        await self._send_cli_reply(packet, reply, handler_info)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing CLI command: {e}", exc_info=True)
 
     async def _send_packet(self, packet, wait_for_ack: bool = False):
 
@@ -245,7 +252,7 @@ class TextHelper:
         return any(message.startswith(prefix) for prefix in command_prefixes)
     
     def _check_admin_permission(self, src_hash: int) -> bool:
-        """Check if sender has admin permissions (bit 0x01)."""
+        """Check if sender has admin permissions (bit 0x02)."""
         # Get the repeater's ACL
         repeater_acl = self.acl_dict.get(self.repeater_hash)
         if not repeater_acl:
@@ -256,9 +263,10 @@ class TextHelper:
         for client_info in clients:
             pubkey = client_info.id.get_public_key()
             if pubkey[0] == src_hash:
-                # Check admin bit (0x01)
+                # Check admin bit (0x02 = PERM_ACL_ADMIN)
                 permissions = getattr(client_info, 'permissions', 0)
-                return (permissions & 0x01) != 0
+                PERM_ACL_ADMIN = 0x02
+                return (permissions & 0x02) == PERM_ACL_ADMIN
         
         return False
     
@@ -266,10 +274,12 @@ class TextHelper:
         """
         Send CLI reply back to sender using TXT_MSG datagram.
         
-        Follows the C++ pattern:
+        Follows the C++ pattern (lines 603-609 in MyMesh.cpp):
         - Creates TXT_MSG datagram with TXT_TYPE_CLI_DATA flag
         - Encrypts with shared secret from ACL client
-        - Sends via flood or direct depending on client's out_path
+        - Uses client->out_path_len to decide routing:
+          * if out_path_len < 0: sendFlood()
+          * else: sendDirect() with stored out_path
         """
         from pymc_core.protocol import PacketBuilder, Identity
         from pymc_core.protocol.constants import PAYLOAD_TYPE_TXT_MSG
@@ -277,6 +287,10 @@ class TextHelper:
         
         try:
             src_hash = original_packet.payload[1]
+            dest_hash = original_packet.payload[0]
+            
+            incoming_route = original_packet.get_route_type()
+            logger.debug(f"CLI reply: original packet dest=0x{dest_hash:02X}, src=0x{src_hash:02X}, incoming_route={incoming_route}")
             
             # Find the client in repeater's ACL to get shared secret
             repeater_acl = self.acl_dict.get(self.repeater_hash)
@@ -310,27 +324,38 @@ class TextHelper:
             reply_bytes = reply_text.encode('utf-8')
             plaintext = timestamp.to_bytes(4, 'little') + bytes([flags]) + reply_bytes
             
-            # Create datagram using PacketBuilder
+            # Decide routing based on client->out_path_len (C++ pattern)
+            # out_path is populated by PATH packets, NOT from incoming text message route
+            route_type = "flood" if client.out_path_len < 0 else "direct"
+            logger.debug(f"CLI reply: client.out_path_len={client.out_path_len}, using route_type={route_type}")
+            
             reply_packet = PacketBuilder.create_datagram(
                 ptype=PAYLOAD_TYPE_TXT_MSG,
                 dest=client.id,
                 local_identity=handler_info["identity"],
                 secret=shared_secret,
                 plaintext=plaintext,
-                route_type="flood" if client.out_path_len < 0 else "direct"
+                route_type=route_type
             )
             
-            # Add path for direct routing if available
+            # Debug reply packet structure
+            if len(reply_packet.payload) >= 2:
+                reply_dest_hash = reply_packet.payload[0]
+                reply_src_hash = reply_packet.payload[1]
+                logger.debug(f"CLI reply: Packet created - dest=0x{reply_dest_hash:02X}, src=0x{reply_src_hash:02X}, route={reply_packet.get_route_type()}")
+            
+            # Add path for direct routing if available from PATH packets
             if client.out_path_len >= 0 and len(client.out_path) > 0:
                 reply_packet.path = bytearray(client.out_path[:client.out_path_len])
                 reply_packet.path_len = client.out_path_len
+                logger.debug(f"CLI reply: Added stored out_path - path_len={reply_packet.path_len}, path={[hex(b) for b in reply_packet.path]}")
             
-            # Send with delay (CLI_REPLY_DELAY_MILLIS = 1500ms in C++)
-            CLI_REPLY_DELAY_MS = 1500
+            # Send with delay (CLI_REPLY_DELAY_MILLIS = 600ms in C++)
+            CLI_REPLY_DELAY_MS = 600
             await asyncio.sleep(CLI_REPLY_DELAY_MS / 1000.0)
             
             await self._send_packet(reply_packet, wait_for_ack=False)
-            logger.info(f"CLI reply sent to 0x{src_hash:02X}: {reply_text[:50]}")
+            logger.info(f"CLI reply sent to 0x{src_hash:02X} via {route_type.upper()}: {reply_text[:50]}")
             
         except Exception as e:
             logger.error(f"Error sending CLI reply: {e}", exc_info=True)

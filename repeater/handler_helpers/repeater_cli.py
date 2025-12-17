@@ -52,14 +52,18 @@ class RepeaterCLI:
         if not is_admin:
             return "Error: Admin permission required"
         
+        logger.debug(f"handle_command received: '{command}' (len={len(command)})")
+        
         # Extract optional sequence prefix (XX|)
         prefix = ""
         if len(command) > 4 and command[2] == '|':
             prefix = command[:3]
             command = command[3:]
+            logger.debug(f"Extracted prefix: '{prefix}', remaining command: '{command}'")
         
         # Strip leading/trailing whitespace
         command = command.strip()
+        logger.debug(f"After strip: '{command}'")
         
         # Route to appropriate handler
         reply = self._route_command(command)
@@ -203,6 +207,7 @@ class RepeaterCLI:
     def _cmd_get(self, param: str) -> str:
         """Handle get commands."""
         param = param.strip()
+        logger.debug(f"_cmd_get called with param: '{param}' (len={len(param)})")
         
         if param == "af":
             af = self.repeater_config.get('airtime_factor', 1.0)

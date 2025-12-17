@@ -6,6 +6,7 @@ from pymc_core.node.handlers.control import ControlHandler
 from pymc_core.node.handlers.advert import AdvertHandler
 from pymc_core.node.handlers.login_server import LoginServerHandler
 from pymc_core.node.handlers.text import TextMessageHandler
+from pymc_core.node.handlers.path import PathHandler
 
 logger = logging.getLogger("PacketRouter")
 
@@ -107,6 +108,12 @@ class PacketRouter:
                 # Only skip forwarding if we actually handled it
                 if handled:
                     processed_by_injection = True
+        
+        elif payload_type == PathHandler.payload_type():
+            # Process PATH packet to update client out_path for direct routing
+            if self.daemon.path_helper:
+                await self.daemon.path_helper.process_path_packet(packet)
+                # Note: process_path_packet returns False to allow forwarding
         
         # Only pass to repeater engine if not already processed by injection
         if self.daemon.repeater_handler and not processed_by_injection:

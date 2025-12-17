@@ -6,7 +6,7 @@ import sys
 from repeater.config import get_radio_for_board, load_config
 from repeater.engine import RepeaterHandler
 from repeater.web.http_server import HTTPStatsServer, _log_buffer
-from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper, TextHelper
+from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper, TextHelper, PathHelper
 from repeater.packet_router import PacketRouter
 from repeater.identity_manager import IdentityManager
 
@@ -30,6 +30,7 @@ class RepeaterDaemon:
         self.discovery_helper = None
         self.login_helper = None
         self.text_helper = None
+        self.path_helper = None
         self.acl = None
         self.router = None
 
@@ -214,6 +215,13 @@ class RepeaterDaemon:
                 )
             
             logger.info("Text message processing helper initialized")
+            
+            # Initialize PATH packet helper for updating client out_path
+            self.path_helper = PathHelper(
+                acl_dict=self.login_helper.get_acl_dict(),  # Per-identity ACLs
+                log_fn=logger.info,
+            )
+            logger.info("PATH packet processing helper initialized")
 
         except Exception as e:
             logger.error(f"Failed to initialize dispatcher: {e}")
