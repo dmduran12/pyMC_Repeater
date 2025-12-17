@@ -25,6 +25,7 @@ class ClientInfo:
         self.last_login_success = 0
         self.out_path_len = -1
         self.out_path = bytearray()
+        self.sync_since = 0  # For room servers - timestamp of last synced message
 
     def is_admin(self) -> bool:
         return (self.permissions & PERM_ACL_ROLE_MASK) == PERM_ACL_ADMIN
@@ -54,6 +55,7 @@ class ACL:
         shared_secret: bytes, 
         password: str, 
         timestamp: int,
+        sync_since: int = None,
         target_identity_hash: int = None,
         target_identity_name: str = None,
         target_identity_config: dict = None
@@ -67,6 +69,10 @@ class ACL:
         # Determine if this is a room server by checking the type field
         identity_type = target_identity_config.get("type", "")
         is_room_server = identity_type == "room_server"
+        
+        # Log sync_since if provided (room server format)
+        if sync_since is not None:
+            logger.debug(f"Client sync_since timestamp: {sync_since}")
         
         if is_room_server:
             # Room servers use passwords from their settings section only
@@ -132,6 +138,11 @@ class ACL:
         client.permissions &= ~PERM_ACL_ROLE_MASK
         client.permissions |= permissions
         client.shared_secret = shared_secret
+        
+        # Store sync_since for room server clients
+        if sync_since is not None:
+            client.sync_since = sync_since
+            logger.debug(f"Stored sync_since={sync_since} for client")
 
         logger.info(f"Login success! Permissions: {'ADMIN' if client.is_admin() else 'GUEST'}")
         return True, client.permissions
