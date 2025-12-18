@@ -500,14 +500,10 @@ class RoomServer:
                 # Get all clients for this room
                 all_clients = self.acl.get_all_clients()
                 if not all_clients:
-                    logger.debug(f"Room '{self.room_name}': No authenticated clients found")
+                    # Only log once when transitioning from clients to no clients
+                    # to avoid log spam when room is idle
                     self.next_push_time = time.time() + 1.0  # Check again in 1 second
                     continue
-                
-                logger.debug(
-                    f"Room '{self.room_name}': Found {len(all_clients)} authenticated client(s), "
-                    f"checking for unsynced messages"
-                )
                 
                 # SAFETY: Limit number of clients
                 if len(all_clients) > MAX_CLIENTS_PER_ROOM:
@@ -572,12 +568,6 @@ class RoomServer:
                             sync_since=sync_since,
                             last_activity=time.time()
                         )
-                    
-                    # Log the sync check for debugging
-                    logger.debug(
-                        f"Room '{self.room_name}': Checking client 0x{client.id.get_public_key()[0]:02X} "
-                        f"for messages newer than sync_since={sync_since:.1f}"
-                    )
                     
                     # Find next unsynced message for this client
                     unsynced = self.db.get_unsynced_messages(

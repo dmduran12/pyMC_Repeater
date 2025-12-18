@@ -198,7 +198,8 @@ class StorageCollector:
             Node name if found, None otherwise
         """
         try:
-            with self.sqlite_handler.get_connection() as conn:
+            import sqlite3
+            with sqlite3.connect(self.sqlite_handler.sqlite_path) as conn:
                 result = conn.execute(
                     "SELECT node_name FROM adverts WHERE pubkey = ? AND node_name IS NOT NULL ORDER BY last_seen DESC LIMIT 1",
                     (pubkey,)
