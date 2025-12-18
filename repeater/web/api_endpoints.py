@@ -2510,21 +2510,7 @@ class APIEndpoints:
         }
         
         .topbar {
-            background-color: #1b1b1b !important;
-            border-bottom: 2px solid #3b4151;
-        }
-        
-        .topbar .download-url-wrapper { display: none; }
-        
-        .swagger-ui .topbar .topbar-wrapper {
-            padding: 16px 20px;
-        }
-        
-        .swagger-ui .topbar .topbar-wrapper::before {
-            content: "pyMC Repeater API Documentation";
-            font-size: 1.5em;
-            font-weight: 600;
-            color: #fff;
+            display: none !important;
         }
         
         .swagger-ui .info {
