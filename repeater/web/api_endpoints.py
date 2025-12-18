@@ -2527,7 +2527,8 @@ class APIEndpoints:
                 tryItOutEnabled: true,
                 filter: true,
                 displayRequestDuration: true,
-                persistAuthorization: true
+                persistAuthorization: true,
+                validatorUrl: null
             });
         };
     </script>

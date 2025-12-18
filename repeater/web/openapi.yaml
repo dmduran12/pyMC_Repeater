@@ -15,7 +15,7 @@ info:
   version: 1.0.0
   contact:
     name: pyMC Repeater
-    url: https://github.com/yourusername/pymc_repeater
+    url: https://github.com/rightup/pyMC_Repeater
 
 servers:
   - url: http://localhost:8080/api
@@ -106,14 +106,85 @@ paths:
                 mode:
                   type: string
                   enum: [forward, monitor]
+                  description: |
+                    - forward: Active forwarding mode (default)
+                    - monitor: Passive monitoring only
                   example: forward
+            examples:
+              forward:
+                value:
+                  mode: forward
+              monitor:
+                value:
+                  mode: monitor
       responses:
         '200':
-          description: Mode changed
+      description: Returns packet counts, types, and routing statistics
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+            default: 24
+            minimum: 1
+            maximum: 168
+          description: Time range in hours (1-168 = 1 hour to 1 week)
+          example: 24
+      responses:
+        '200':
+          description: Packet statistics
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      total_packets:
+                        type: integer
+                      received:
+                        type: integer
+                      transmitted:
+                        type: integer
+                      dropped:
+                        type: integer
+                      by_type:
+                        type: object
+                      by_route:
+                    application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /set_duty_cycle:
+    post:
+      tags: [System]
+      summary: Set duty cycle
+      description: Enable or disable duty cycle limiting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+                  description: Enable duty cycle limiting
+                  example: true
+            examples:
+              enable:
+                value:
+                  enabled: true
+              disable:
+                value:
+                  enabled: false
+      responses:
+        '200':
+          description: Duty cycle setting updated
 
   /packet_stats:
     get:
@@ -149,6 +220,184 @@ paths:
         '200':
           description: Packet details
 
+  /rrd_data:
+    get:
+      tags: [Charts]
+      summary: Get RRD time-series data
+      description: Retrieve Round-Robin Database metrics for graphing
+      parameters:
+        - name: start_time
+          in: query
+          schema:
+            type: integer
+          description: Start timestamp (Unix epoch)
+        - name: end_time
+          in: query
+          schema:
+            type: integer
+          description: End timestamp (Unix epoch)
+        - name: resolution
+          in: query
+          schema:
+            type: string
+            enum: [average, max, min]
+            default: average
+          description: Data resolution/aggregation method
+      responses:
+        '200':
+          description: RRD time-series data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      start_time:
+                        type: integer
+                      end_time:
+                        type: integer
+                      step:
+                        type: integer
+                      timestamps:
+                        type: array
+                        items:
+                          type: integer
+                      metrics:
+                        type: object
+
+  /packet_type_graph_data:
+    get:
+      tags: [Charts]
+      summary: Get packet type distribution graph data
+      description: Returns bar chart data showing packet counts by type
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+            default: 24
+          description: Time range in hours
+        - name: resolution
+          in: query
+          schema:
+            type: string
+            enum: [average, max, min]
+            default: average
+        - name: types
+          in: query
+          schema:
+            type: string
+            default: all
+          description: Comma-separated packet types or 'all'
+      responses:
+        '200':
+          description: Packet type graph data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      start_time:
+                        type: integer
+                      end_time:
+                        type: integer
+                      step:
+                        type: integer
+                      chart_type:
+                        type: string
+                        example: bar
+                      series:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            type:
+                              type: string
+                            data:
+                              type: array
+
+  /metrics_graph_data:
+    get:
+      tags: [Charts]
+      summary: Get system metrics graph data
+      description: |
+        Returns time-series data for system metrics like packet counts, RSSI, SNR, etc.
+        
+        Available metrics:
+        - rx_count: Received packets
+        - tx_count: Transmitted packets
+        - drop_count: Dropped packets
+        - avg_rssi: Average RSSI (dBm)
+        - avg_snr: Average SNR (dB)
+        - avg_length: Average packet length
+        - avg_score: Average score
+        - neighbor_count: Neighbor count
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+            default: 24
+          description: Time range in hours
+        - name: resolution
+          in: query
+          schema:
+            type: string
+            enum: [average, max, min]
+            default: average
+        - name: metrics
+          in: query
+          schema:
+            type: string
+            default: all
+          description: Comma-separated metric names or 'all'
+          example: "rx_count,tx_count,avg_rssi"
+      responses:
+        '200':
+          description: Metrics graph data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      start_time:
+                        type: integer
+                      end_time:
+                        type: integer
+                      step:
+                        type: integer
+                      timestamps:
+                        type: array
+                        items:
+                          type: integer
+                      series:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            type:
+                              type: string
+                            data:
+                              type: array
+
   /noise_floor_history:
     get:
       tags: [Noise Floor]
@@ -159,28 +408,7 @@ paths:
           schema:
             type: integer
             default: 24
-      responses:
-        '200':
-          description: Noise floor history data
-
-  /noise_floor_stats:
-    get:
-      tags: [Noise Floor]
-      summary: Get noise floor statistics
-      parameters:
-        - name: hours
-          in: query
-          schema:
-            type: integer
-            default: 24
-      responses:
-        '200':
-          description: Noise floor stats
-
-  /cad_calibration_start:
-    post:
-      tags: [CAD Calibration]
-      summary: Start CAD calibration
+      description: Begin Channel Activity Detection calibration process
       requestBody:
         required: true
         content:
@@ -191,10 +419,132 @@ paths:
                 samples:
                   type: integer
                   default: 8
+                  minimum: 1
+                  maximum: 64
+                  description: Number of samples to collect
+                  example: 8
                 delay:
                   type: integer
                   default: 100
+                  minimum: 10
+                  maximum: 1000
+                  description: Delay between samples in milliseconds
+                  example: 100
+            examples:
+              default:
+                value:
+                  samples: 8
+                  delay: 100
+              detailed:
+                value:
+                  samples: 16
+                  delay: 50
       responses:
+        '200':
+          description: Calibration started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+      description: Create a new repeater or room server identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  pattern: '^[a-zA-Z0-9_\-\s]+$'
+                  description: Identity name (alphanumeric, spaces, hyphens, underscores)
+                  example: "General Chat"
+                identity_key:
+                  type: string
+                  pattern: '^[0-9a-fA-F]{64}$'
+                  description: 32-byte hex key (64 chars). Omit for auto-generation
+                  example: "abc123def456..."
+                type:
+                  type: string
+                  enum: [repeater, room_server]
+                  description: |
+                    - repeater: Repeater identity (only one allowed)
+                    - room_server: Room server for group chat
+                  example: room_server
+                settings:
+                  type: object
+                  description: Type-specific settings
+                  properties:
+                    admin_password:
+                      type: string
+                      minLength: 4
+                      description: Admin authentication password (room_server only)
+                      example: "admin123"
+                    guest_password:
+                      type: string
+                      minLength: 4
+                      description: Guest authentication password (room_server only)
+                      example: "guest123"
+                    max_posts:
+                      type: integer
+                      minimum: 1
+                      maximum: 32
+                      default: 32
+                      description: Maximum messages to keep (hard limit 32)
+                      example: 32
+            examples:
+              room_server:
+                value:
+                  name: "General Chat"
+                  type: room_server
+                  settings:
+                    admin_password: "admin123"
+                    guest_password: "guest123"
+                    max_posts: 32
+              repeater:
+                value:
+                  name: "My Repeater"
+                  type: repeater
+                  identity_key: "abc123def456..."
+      responses:
+        '200':
+          description: Identity created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      type:
+                        type: string
+                      hash:
+                        type: string
+                      public_key:
+                        type: string
+              examples:
+                success:
+                  value:
+                    success: true
+                    data:
+                      name: "General Chat"
+                      type: room_server
+                      hash: "0x42"
+                      public_key: "abc123..."
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '200':
           description: Calibration started
 
@@ -225,101 +575,230 @@ paths:
                     properties:
                       identities:
                         type: array
-                        items:
-                          $ref: '#/components/schemas/Identity'
-
-  /identity:
-    get:
-      tags: [Identities]
-      summary: Get specific identity
+                   |
+        Retrieve messages from a room with pagination.
+        
+        **Max Messages Per Room**: 32 (hard limit)
+        - Older messages auto-deleted every 10 minutes
+        - Cannot be increased beyond 32
       parameters:
-        - name: name
-          in: query
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Identity details
-
-  /create_identity:
-    post:
-      tags: [Identities]
-      summary: Create new identity
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, type]
-              properties:
-                name:
-                  type: string
-                identity_key:
-                  type: string
-                type:
-                  type: string
-                  enum: [repeater, room_server]
-                settings:
-                  type: object
-      responses:
-        '200':
-          description: Identity created
-
-  /acl_info:
-    get:
-      tags: [ACL]
-      summary: Get ACL configuration
-      description: Returns ACL settings and statistics for all identities
-      responses:
-        '200':
-          description: ACL information
-
-  /acl_clients:
-    get:
-      tags: [ACL]
-      summary: List authenticated clients
-      parameters:
-        - name: identity_hash
+        - name: room_name
           in: query
           schema:
             type: string
+          description: Name of the room (use this OR room_hash)
+          example: General
+        - name: room_hash
+          in: query
+          schema:
+            type: string
+            pattern: '^0x[0-9a-fA-F]{2}$'
+          description: Hash of room identity (use this OR room_name)
           example: "0x42"
-        - name: identity_name
+        - name: limit
           in: query
           schema:
-            type: string
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+          description: Max messages to return
+          example: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Skip first N messages (for pagination)
+          example: 0
+        - name: since_timestamp
+          in: query
+          schema:
+            type: number
+            format: float
+          description: Only return messages after this Unix timestamp
+          example: 1734567890.5
       responses:
         '200':
-          description: Client list
-
-  /acl_remove_client:
-    post:
-      tags: [ACL]
-      summary: Remove client from ACL
-      requestBody:
-        required: true
+          description: Messages retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      room_name:
+                        type: string
+                      room_hash:
+                        type: string
+                      messages:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RoomMessage'
+                      count:
+                        type: integer
+                        description: Number of messages in this response
+                      total:
+                        type: integer
+                        description: Total messages in room (max 32)
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+              examples:
+                success:
+                  value:
+                    success: true
+                    data:
+                      room_name: "General"
+                      room_hash: "0x42"
+                      messages:
+                        - id: 123
+                          author_pubkey: "abc123def456..."
+                          author_prefix: "abc123de"
+                          post_timestamp: 1734567890.5
+                          sender_timestamp: 1734567890
+                          message_text: "Hello world"
+                          txt_type: 0
+                          created_at: 1734567890.5
+                      count: 1
+                      total: 15
+                      limit: 50
+                      offset: 0
+        '404':
+          description: Room not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         content:
           application/json:
             schema:
               type: object
-              required: [public_key, identity_hash]
+              required: [message, author_pubkey]
               properties:
-                public_key:
+                room_name:
                   type: string
-                identity_hash:
+                  description: Name of the room (use this OR room_hash)
+                  example: General
+                room_hash:
                   type: string
+                  pattern: '^0x[0-9a-fA-F]{2}$'
+                  description: Hash of room identity (use this OR room_name)
+                  example: "0x42"
+                message:
+                  type: string
+                  minLength: 1
+                  maxLength: 160
+                  description: Message text (auto-truncated at 160 bytes)
+                  example: "Hello from API"
+                author_pubkey:
+                  type: string
+                  description: |
+                    Author's public key as hex string (64 chars), or special values:
+                    - "server" = system message (all clients receive)
+                    - "system" = alias for "server"
+                    - hex string = normal message (author won't receive)
+                  example: "abc123def456..."
+                txt_type:
+                  type: integer
+                  default: 0
+                  enum: [0, 2]
+                  description: |
+                    Message type:
+                    - 0: Plain text
+                    - 2: Signed plain text
+                  example: 0
+            examples:
+              normal_message:
+                summary: Normal message
+                value:
+                  room_name: "General"
+                  message: "Hello everyone!"
+                  author_pubkey: "abc123def456..."
+                  txt_type: 0
+              server_message:
+                summary: Server announcement
+                value:
+                  room_name: "General"
+                  message: "[SERVER] Maintenance in 10 minutes"
+                  author_pubkey: "server"
+              by_hash:
+                summary: Post by room hash
+                value:
+                  room_hash: "0x42"
+                  message: "Using hash instead of name"
+                  author_pubkey: "abc123..."
       responses:
         '200':
-          description: Client removed
-
-  /acl_stats:
-    get:
-      tags: [ACL]
-      summary: Get ACL statistics
-      responses:
-        '200':
+          description: Message posted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      message_id:
+                        type: integer
+                        description: Database ID of created message
+                      room_name:
+                        type: string
+                      room_hash:
+                        type: string
+                      queued_for_distribution:
+                        type: boolean
+                        description: Always true - distribution is async
+                      is_server_message:
+                        type: boolean
+                        description: True if author_pubkey was "server"
+                      author_filter_note:
+                        type: string
+                        description: Explains message distribution behavior
+              examples:
+                normal:
+                  value:
+                    success: true
+                    data:
+                      message_id: 124
+                      room_name: "General"
+                      room_hash: "0x42"
+                      queued_for_distribution: true
+                      is_server_message: false
+                      author_filter_note: "Message will NOT be sent to author"
+                server:
+                  value:
+                    success: true
+                    data:
+                      message_id: 125
+                      room_name: "General"
+                      room_hash: "0x42"
+                      queued_for_distribution: true
+                      is_server_message: true
+                      author_filter_note: "Server messages go to ALL clients"
+        '400':
+          description: Invalid parameters or rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                rate_limit:
+                  value:
+                    success: false
+                    error: "Failed to add message (rate limit or validation error)"
+                missing_field:
+                  value:
+                    success: false
+                    error: "message is required"
           description: ACL statistics
 
   /room_messages:
@@ -448,16 +927,27 @@ paths:
     get:
       tags: [Room Server]
       summary: Get room statistics
-      description: Get detailed statistics for one or all rooms
+      description: |
+        Get detailed statistics for one or all room servers.
+        
+        **Room Limits:**
+        - 32 messages maximum per room (hard limit)
+        - Messages auto-expire every 10 minutes
+        - Author filtering: messages not sent back to author
       parameters:
         - name: room_name
           in: query
           schema:
             type: string
+          description: Get stats for specific room (omit for all rooms)
+          example: General
         - name: room_hash
           in: query
           schema:
             type: string
+            pattern: '^0x[0-9a-fA-F]{2}$'
+          description: Get stats by room hash (use this OR room_name)
+          example: "0x42"
       responses:
         '200':
           description: Room statistics
@@ -477,28 +967,140 @@ paths:
                         type: string
                       total_messages:
                         type: integer
+                        minimum: 0
+                        maximum: 32
+                        description: Current message count (max 32)
+                        example: 15
                       total_clients:
                         type: integer
+                        minimum: 0
+                        description: Total clients that have synced
+                        example: 8
                       active_clients:
                         type: integer
+                        minimum: 0
+                        description: Clients active within timeout window
+                        example: 3
                       max_posts:
                         type: integer
+                        minimum: 1
+                        maximum: 32
+                        description: Message limit setting (always 32)
                         example: 32
                       sync_running:
                         type: boolean
+                        description: Distribution task is active
+                        example: true
                       clients:
                         type: array
+                        description: List of all clients with sync status
                         items:
                           $ref: '#/components/schemas/RoomClient'
+              examples:
+                single_room:
+                  value:
+                    success: true
+                    data:
+                      room_name: "General"
+                      room_hash: "0x42"
+                      total_messages: 15
+                      total_clients: 8
+                      active_clients: 3
+                      max_posts: 32
+                      sync_running: true
+                      clients:
+                        - pubkey: "abc123..."
+                          pubkey_prefix: "abc123de"
+                          sync_since: 1734567890.5
+                          unsynced_count: 5
+                          is_active: true
+                all_rooms:
+                  value:
+                    success: true
+                    data:
+                      rooms:
+                        - room_name: "General"
+                          total_messages: 15
+                          active_clients: 3
+                        - room_name: "Tech"
+                          total_messages: 8
+                          active_clients: 1
+        '404':
+          description: Room not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /room_clients:
     get:
       tags: [Room Server]
       summary: Get room clients
+      description: |
+        List all clients synced to a room with their status.
+        
+        **Client Filtering:**
+        - Clients only receive messages where author_pubkey ≠ client_pubkey
+        - unsynced_count shows pending messages for each client
+        - is_active indicates client synced within timeout window
       parameters:
         - name: room_name
           in: query
           schema:
+            type: string
+          description: Room name
+          example: General
+        - name: room_hash
+          in: query
+          schema:
+            type: string
+            pattern: '^0x[0-9a-fA-F]{2}$'
+          description: Room hash (use this OR room_name)
+          example: "0x42"
+      responses:
+        '200':
+          description: Client list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      room_name:
+                        type: string
+                      room_hash:
+                        type: string
+                      clients:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RoomClient'
+              examples:
+                success:
+                  value:
+                    success: true
+                    data:
+                      room_name: "General"
+                      room_hash: "0x42"
+                      clients:
+                        - pubkey: "abc123def456..."
+                          pubkey_prefix: "abc123de"
+                          sync_since: 1734567890.5
+                          unsynced_count: 5
+                          pending_ack: false
+                          push_failures: 0
+                          last_activity: 1734567890.5
+                          in_acl: true
+                          is_active: true
+        '404':
+          description: Room not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
             type: string
         - name: room_hash
           in: query
@@ -582,49 +1184,177 @@ components:
 
     RoomMessage:
       type: object
+      required: [id, author_pubkey, post_timestamp, message_text, txt_type]
       properties:
         id:
           type: integer
+          description: Database message ID
+          example: 123
         author_pubkey:
           type: string
+          pattern: '^[0-9a-fA-F]{64}$|^00{64}$'
+          description: |
+            Author's public key (64 hex chars):
+            - 32 zeros (64 '0's) = server/system message
+            - Other hex = regular user message
+          example: "abc123def456..."
         author_prefix:
           type: string
+          pattern: '^[0-9a-fA-F]{8}$'
+          description: First 8 chars of author_pubkey (for display)
+          example: "abc123de"
         post_timestamp:
           type: number
           format: float
+          description: Server timestamp when message was stored (Unix epoch)
+          example: 1734567890.5
         sender_timestamp:
           type: integer
+          description: Client-provided timestamp (may be inaccurate)
+          example: 1734567890
         message_text:
           type: string
+          maxLength: 160
+          description: Message content (auto-truncated at 160 bytes)
+          example: "Hello world"
         txt_type:
           type: integer
+          enum: [0, 2]
+          description: |
+            Message type:
+            - 0: Plain text
+            - 2: Signed plain text
+          example: 0
         created_at:
           type: number
           format: float
+          description: Database insertion timestamp (Unix epoch)
+          example: 1734567890.5
 
     RoomClient:
       type: object
+      required: [pubkey, sync_since, unsynced_count, is_active]
       properties:
         pubkey:
           type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: Client's public key (64 hex chars)
+          example: "abc123def456..."
         pubkey_prefix:
           type: string
+          pattern: '^[0-9a-fA-F]{8}$'
+          description: First 8 chars of pubkey (for display)
+          example: "abc123de"
         sync_since:
           type: number
           format: float
+          description: Last sync timestamp (Unix epoch)
+          example: 1734567890.5
         unsynced_count:
           type: integer
+          minimum: 0
+          maximum: 32
+          description: Number of new messages for this client (max 32, messages NOT sent to author)
+          example: 5
         pending_ack:
           type: boolean
+          description: Waiting for ACK from client
+          example: false
         push_failures:
           type: integer
+          minimum: 0
+          description: Number of failed delivery attempts
+          example: 0
         last_activity:
           type: number
           format: float
+          description: Last activity timestamp (Unix epoch)
+          example: 1734567890.5
         in_acl:
           type: boolean
+          description: Client passes ACL check
+          example: true
         is_active:
           type: boolean
+          description: Client is currently active (synced within timeout period)
+          example: true
+    
+    Identity:
+      type: object
+      required: [name, type, hash, public_key]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_\-\s]+$'
+          description: Identity name (alphanumeric, spaces, hyphens, underscores)
+          example: "General Chat"
+        type:
+          type: string
+          enum: [repeater, room_server]
+          description: |
+            - repeater: Repeater identity (only one allowed per system)
+            - room_server: Room server for group chat
+          example: room_server
+        hash:
+          type: string
+          pattern: '^0x[0-9a-fA-F]{2}$'
+          description: 1-byte identity hash (used in radio packets)
+          example: "0x42"
+        public_key:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: Ed25519 public key (64 hex chars)
+          example: "abc123def456..."
+        settings:
+          type: object
+          description: Type-specific settings
+          properties:
+            admin_password:
+              type: string
+              minLength: 4
+              description: Admin password (room_server only)
+              example: "admin123"
+            guest_password:
+              type: string
+              minLength: 4
+              description: Guest password (room_server only)
+              example: "guest123"
+            max_posts:
+              type: integer
+              minimum: 1
+              maximum: 32
+              default: 32
+              description: Maximum messages to keep (room_server only, hard limit 32)
+              example: 32
+    
+    ACLEntry:
+      type: object
+      required: [action, network_address, port]
+      properties:
+        action:
+          type: string
+          enum: [allow, deny]
+          description: |
+            - allow: Permit packets from this address
+            - deny: Block packets from this address
+          example: allow
+        network_address:
+          type: string
+          description: IP address or CIDR range (e.g., 192.168.1.0/24)
+          example: "192.168.1.0/24"
+        port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+          description: Source port (0 = any port)
+          example: 0
+        comment:
+          type: string
+          maxLength: 200
+          description: Optional description
+          example: "Allow local network"
 
   securitySchemes:
     # Future: API key authentication
