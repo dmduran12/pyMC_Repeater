@@ -2651,6 +2651,9 @@ class APIEndpoints:
     <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
     <script>
         window.onload = function() {
+            // Use current browser location for API calls
+            const currentUrl = window.location.protocol + '//' + window.location.host + '/api';
+            
             const ui = SwaggerUIBundle({
                 url: '/api/openapi',
                 dom_id: '#swagger-ui',
@@ -2679,10 +2682,16 @@ class APIEndpoints:
                 showExtensions: true,
                 showCommonExtensions: true,
                 tagsSorter: "alpha",
-                operationsSorter: "alpha"
+                operationsSorter: "alpha",
+                // Override servers list to use current host
+                servers: [
+                    {
+                        url: currentUrl,
+                        description: "Current host"
+                    }
+                ]
             });
             
-            // Add API info to title
             window.ui = ui;
         };
     </script>
