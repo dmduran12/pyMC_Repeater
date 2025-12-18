@@ -63,6 +63,11 @@ class LoginHelper:
                 "guest_password": security.get("guest_password", "guest123"),
                 "allow_read_only": security.get("allow_read_only", True),
             }
+            logger.debug(
+                f"Repeater security config: admin_pw={'SET' if final_security['admin_password'] else 'NONE'}, "
+                f"guest_pw={'SET' if final_security['guest_password'] else 'NONE'}, "
+                f"max_clients={final_security['max_clients']}"
+            )
         
         # Create ACL for this identity
         identity_acl = ACL(
@@ -92,6 +97,7 @@ class LoginHelper:
             local_identity=identity,
             log_fn=self.log_fn,
             authenticate_callback=auth_callback_with_context,
+            is_room_server=(identity_type == "room_server"),
         )
         
         handler.set_send_packet_callback(self._send_packet_with_delay)

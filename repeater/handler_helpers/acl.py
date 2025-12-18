@@ -87,6 +87,10 @@ class ACL:
             # Repeater uses global passwords from its own security section
             admin_pwd = self.admin_password
             guest_pwd = self.guest_password
+            logger.debug(
+                f"Repeater passwords - admin: {'SET' if admin_pwd else 'NONE'}, "
+                f"guest: {'SET' if guest_pwd else 'NONE'}"
+            )
         
         if target_identity_name:
             logger.debug(f"Authenticating for identity '{target_identity_name}' (room_server={is_room_server})")
@@ -106,6 +110,9 @@ class ACL:
             return True, client.permissions
 
         permissions = 0
+        logger.debug(f"Comparing password (len={len(password)}) against admin/guest")
+        logger.debug(f"Admin pwd len={len(admin_pwd) if admin_pwd else 0}, Guest pwd len={len(guest_pwd) if guest_pwd else 0}")
+        logger.debug(f"Password comparison: '{password}' vs admin='{admin_pwd[:4]}...' ({len(admin_pwd)} chars)")
         if admin_pwd and password == admin_pwd:
             permissions = PERM_ACL_ADMIN
             logger.info(f"Admin password validated for '{target_identity_name or 'unknown'}'")
