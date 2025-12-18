@@ -168,12 +168,11 @@ class RepeaterDaemon:
             )
             
             # Register default repeater identity
-            repeater_config = self.config.get("repeater", {})
             self.login_helper.register_identity(
                 name="repeater",
                 identity=self.local_identity,
                 identity_type="repeater",
-                config=repeater_config  # Pass repeater config (includes security settings)
+                config=self.config  # Pass full config so repeater can access top-level security section
             )
             
             # Register room server identities with their configs

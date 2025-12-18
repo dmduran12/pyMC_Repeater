@@ -55,10 +55,10 @@ class LoginHelper:
                 "allow_read_only": settings.get("allow_read_only", True),
             }
         else:
-            # Repeater uses security from its config
-            security = config.get("security", {})
+            # Repeater uses security from repeater.security in config
+            security = config.get("repeater", {}).get("security", {})
             final_security = {
-                "max_clients": security.get("max_clients", 50),
+                "max_clients": security.get("max_clients", 10),
                 "admin_password": security.get("admin_password", "admin123"),
                 "guest_password": security.get("guest_password", "guest123"),
                 "allow_read_only": security.get("allow_read_only", True),

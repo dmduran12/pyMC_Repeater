@@ -1141,6 +1141,12 @@ class APIEndpoints:
             if not name:
                 return self._error("Missing required field: name")
             
+            # Validate passwords are different if both provided
+            admin_pw = settings.get("admin_password")
+            guest_pw = settings.get("guest_password")
+            if admin_pw and guest_pw and admin_pw == guest_pw:
+                return self._error("admin_password and guest_password must be different")
+            
             # Auto-generate identity key if not provided
             key_was_generated = False
             if not identity_key:
@@ -1301,15 +1307,32 @@ class APIEndpoints:
                     return self._error(f"Identity with name '{new_name}' already exists")
                 identity["name"] = new_name
             
-            # Only update identity_key if a non-empty value is provided
+            # Only update identity_key if a valid full key is provided
+            # Silently reject truncated keys (containing "...") or invalid hex strings
             if "identity_key" in data and data["identity_key"]:
-                identity["identity_key"] = data["identity_key"]
+                new_key = data["identity_key"]
+                # Check if it's a truncated key (contains "...") or not a valid 64-char hex string
+                if "..." not in new_key and len(new_key) == 64:
+                    try:
+                        # Validate it's proper hex
+                        bytes.fromhex(new_key)
+                        identity["identity_key"] = new_key
+                        logger.info(f"Updated identity_key for '{name}'")
+                    except ValueError:
+                        # Invalid hex, silently ignore
+                        pass
             
             if "settings" in data:
                 # Merge settings
                 if "settings" not in identity:
                     identity["settings"] = {}
                 identity["settings"].update(data["settings"])
+                
+                # Validate passwords are different if both are now set
+                admin_pw = identity["settings"].get("admin_password")
+                guest_pw = identity["settings"].get("guest_password")
+                if admin_pw and guest_pw and admin_pw == guest_pw:
+                    return self._error("admin_password and guest_password must be different")
             
             # Save to config
             room_servers[identity_index] = identity

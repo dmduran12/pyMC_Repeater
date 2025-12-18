@@ -699,7 +699,7 @@ paths:
     get:
       tags: [ACL]
       summary: List ACL clients
-      description: Get list of clients in access control list
+      description: Get list of authenticated clients in access control list for an identity
       parameters:
         - name: identity_hash
           in: query
@@ -730,7 +730,32 @@ paths:
                       clients:
                         type: array
                         items:
-                          $ref: '#/components/schemas/ACLEntry'
+                          $ref: '#/components/schemas/ACLClient'
+                      count:
+                        type: integer
+                        description: Number of clients returned
+                      filter:
+                        type: string
+                        nullable: true
+                        description: Filter applied (if any)
+              examples:
+                success:
+                  value:
+                    success: true
+                    data:
+                      clients:
+                        - public_key: "03ccf3bb0bed9a51...21416fff"
+                          public_key_full: "03ccf3bb0bed9a5109868a1e33ed020519aab6dbb30e42df3b11a21d21416fff"
+                          address: "e1"
+                          permissions: "admin"
+                          last_activity: 1766065148
+                          last_login_success: 1766065146
+                          last_timestamp: 1766065146
+                          identity_name: "rrrrr"
+                          identity_type: "room_server"
+                          identity_hash: "0xC5"
+                      count: 1
+                      filter: null
 
   /acl_remove_client:
     post:
@@ -1441,32 +1466,58 @@ components:
               description: Maximum messages to keep (room_server only, hard limit 32)
               example: 32
     
-    ACLEntry:
+    ACLClient:
       type: object
-      required: [action, network_address, port]
+      required: [public_key, public_key_full, address, permissions]
       properties:
-        action:
+        public_key:
           type: string
-          enum: [allow, deny]
+          description: Truncated public key for display (first 24 and last 8 chars)
+          example: "03ccf3bb0bed9a51...21416fff"
+        public_key_full:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: Full client public key (64 hex chars)
+          example: "03ccf3bb0bed9a5109868a1e33ed020519aab6dbb30e42df3b11a21d21416fff"
+        address:
+          type: string
+          description: Client address identifier
+          example: "e1"
+        permissions:
+          type: string
+          enum: [admin, guest, read_only]
           description: |
-            - allow: Permit packets from this address
-            - deny: Block packets from this address
-          example: allow
-        network_address:
-          type: string
-          description: IP address or CIDR range (e.g., 192.168.1.0/24)
-          example: "192.168.1.0/24"
-        port:
+            Client permission level:
+            - admin: Full access
+            - guest: Limited access
+            - read_only: Read-only access
+          example: "admin"
+        last_activity:
           type: integer
-          minimum: 0
-          maximum: 65535
-          description: Source port (0 = any port)
-          example: 0
-        comment:
+          description: Unix timestamp of last activity
+          example: 1766065148
+        last_login_success:
+          type: integer
+          description: Unix timestamp of last successful login
+          example: 1766065146
+        last_timestamp:
+          type: integer
+          description: Unix timestamp from last client message
+          example: 1766065146
+        identity_name:
           type: string
-          maxLength: 200
-          description: Optional description
-          example: "Allow local network"
+          description: Name of the identity this client is authenticated to
+          example: "rrrrr"
+        identity_type:
+          type: string
+          enum: [repeater, room_server]
+          description: Type of identity
+          example: "room_server"
+        identity_hash:
+          type: string
+          pattern: '^0x[0-9a-fA-F]{2}$'
+          description: Hash of the identity
+          example: "0xC5"
 
   securitySchemes:
     # Future: API key authentication
