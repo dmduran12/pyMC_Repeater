@@ -2140,35 +2140,43 @@ class APIEndpoints:
             
             # Convert author_pubkey to bytes
             try:
-                # Special case: "server" or "system" = all zeros (goes to ALL clients)
+                # Special case: "server" or "system" = use room server's public key
+                # This allows clients to identify which room server sent the message
                 if isinstance(author_pubkey, str) and author_pubkey.lower() in ('server', 'system'):
-                    author_bytes = bytes(32)  # 32 zeros
+                    # Get room server first to access its identity
+                    room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
+                    room_server = room_info['room_server']
+                    # Use the room server's actual public key
+                    author_bytes = room_server.local_identity.get_public_key()
                     author_pubkey = author_bytes.hex()
+                    is_server_message = True
                 elif isinstance(author_pubkey, str):
                     author_bytes = bytes.fromhex(author_pubkey)
+                    is_server_message = False
                 else:
                     author_bytes = bytes(author_pubkey)
+                    is_server_message = False
             except Exception as e:
                 return self._error(f"Invalid author_pubkey: {e}")
             
-            # Get room server
-            room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
-            room_server = room_info['room_server']
+            # Get room server (if not already retrieved above)
+            if not isinstance(author_pubkey, str) or author_pubkey.lower() not in ('server', 'system'):
+                room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
+                room_server = room_info['room_server']
             
             # Add post to room (will be distributed asynchronously)
             import asyncio
             if self.event_loop:
                 sender_timestamp = int(time.time())
-                # SECURITY: API is allowed to use server author key (for system messages)
-                # TODO: Add authentication/authorization check before allowing this
-                is_server_author = (author_bytes == bytes(32))
+                # SECURITY: Server messages (using room server's key) go to ALL clients
+                # API is allowed to send these (TODO: Add authentication/authorization)
                 future = asyncio.run_coroutine_threadsafe(
                     room_server.add_post(
                         client_pubkey=author_bytes,
                         message_text=message,
                         sender_timestamp=sender_timestamp,
                         txt_type=txt_type,
-                        allow_server_author=is_server_author  # Allow server key from API
+                        allow_server_author=is_server_message  # Allow server key from API
                     ),
                     self.event_loop
                 )
@@ -2181,15 +2189,13 @@ class APIEndpoints:
                     messages = db.get_room_messages(room_hash_str, limit=1, offset=0)
                     message_id = messages[0]['id'] if messages else None
                     
-                    is_server_msg = author_pubkey == "0" * 64
-                    
                     return self._success({
                         'message_id': message_id,
                         'room_name': room_info['name'],
                         'room_hash': room_hash_str,
                         'queued_for_distribution': True,
-                        'is_server_message': is_server_msg,
-                        'author_filter_note': 'Server messages go to ALL clients' if is_server_msg else 'Message will NOT be sent to author'
+                        'is_server_message': is_server_message,
+                        'author_filter_note': 'Server messages go to ALL clients' if is_server_message else 'Message will NOT be sent to author'
                     })
                 else:
                     return self._error("Failed to add message (rate limit or validation error)")

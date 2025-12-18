@@ -36,8 +36,8 @@ DB_ERROR_RETRY_DELAY = 60  # Wait 1 minute on DB error (seconds)
 # Backoff strategy for failed pushes (seconds)
 RETRY_BACKOFF_SCHEDULE = [0, 30, 300, 3600]  # 0s, 30s, 5min, 1hr
 
-# Special author pubkey for server/system messages (not filtered from any client)
-SERVER_AUTHOR_PUBKEY = bytes(32)  # 32 zeros - use for system announcements that go to ALL clients
+# Note: Server/system messages now use the room server's actual public key
+# This allows clients to identify which room server sent the message
 
 # Global rate limiter (shared across all rooms)
 _global_push_limiter = None
