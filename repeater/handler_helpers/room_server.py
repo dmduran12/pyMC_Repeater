@@ -518,10 +518,12 @@ class RoomServer:
                     
                     if last_activity == 0:
                         logger.debug(f"Skipping client 0x{client.id.get_public_key()[0]:02X} (evicted)")
+                        self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 1000.0)
                         continue
                     
                     if push_failures >= 3:
                         logger.debug(f"Skipping client 0x{client.id.get_public_key()[0]:02X} (max failures)")
+                        self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 1000.0)
                         continue
                     
                     sync_since = sync_state.get('sync_since', 0)
