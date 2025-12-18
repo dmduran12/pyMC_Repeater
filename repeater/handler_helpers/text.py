@@ -237,11 +237,13 @@ class TextHelper:
                     txt_type = 0  # TXT_TYPE_PLAIN by default
                     
                     # Store message to room database
+                    # SECURITY: Radio messages cannot use server author key
                     await room_server.add_post(
                         client_pubkey=sender_pubkey,
                         message_text=message_text,
                         sender_timestamp=sender_timestamp,
-                        txt_type=txt_type
+                        txt_type=txt_type,
+                        allow_server_author=False  # Block server key from radio
                     )
                     
                     logger.info(

@@ -36,6 +36,9 @@ DB_ERROR_RETRY_DELAY = 60  # Wait 1 minute on DB error (seconds)
 # Backoff strategy for failed pushes (seconds)
 RETRY_BACKOFF_SCHEDULE = [0, 30, 300, 3600]  # 0s, 30s, 5min, 1hr
 
+# Special author pubkey for server/system messages (not filtered from any client)
+SERVER_AUTHOR_PUBKEY = bytes(32)  # 32 zeros - use for system announcements that go to ALL clients
+
 # Global rate limiter (shared across all rooms)
 _global_push_limiter = None
 _global_push_lock = asyncio.Lock()
@@ -148,7 +151,8 @@ class RoomServer:
         client_pubkey: bytes,
         message_text: str,
         sender_timestamp: int,
-        txt_type: int = TXT_TYPE_PLAIN
+        txt_type: int = TXT_TYPE_PLAIN,
+        allow_server_author: bool = False
     ) -> bool:
 
         try:

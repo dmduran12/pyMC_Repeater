@@ -1044,6 +1044,90 @@ class SQLiteHandler:
             logger.error(f"Failed to get room clients: {e}")
             return []
 
+    def get_room_message_count(self, room_hash: str) -> int:
+        """Get total number of messages in a room."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                cursor = conn.execute("""
+                    SELECT COUNT(*) FROM room_messages WHERE room_hash = ?
+                """, (room_hash,))
+                return cursor.fetchone()[0]
+        except Exception as e:
+            logger.error(f"Failed to get room message count: {e}")
+            return 0
+
+    def get_room_messages(self, room_hash: str, limit: int = 50, offset: int = 0) -> List[Dict]:
+        """Get messages from a room with pagination."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT * FROM room_messages
+                    WHERE room_hash = ?
+                    ORDER BY post_timestamp DESC
+                    LIMIT ? OFFSET ?
+                """, (room_hash, limit, offset))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to get room messages: {e}")
+            return []
+
+    def get_messages_since(self, room_hash: str, since_timestamp: float, limit: int = 50) -> List[Dict]:
+        """Get messages posted after a specific timestamp."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT * FROM room_messages
+                    WHERE room_hash = ? AND post_timestamp > ?
+                    ORDER BY post_timestamp DESC
+                    LIMIT ?
+                """, (room_hash, since_timestamp, limit))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to get messages since timestamp: {e}")
+            return []
+
+    def get_unsynced_count(self, room_hash: str, client_pubkey: str, sync_since: float) -> int:
+        """Get count of unsynced messages for a client."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                cursor = conn.execute("""
+                    SELECT COUNT(*) FROM room_messages
+                    WHERE room_hash = ? 
+                    AND author_pubkey != ?
+                    AND post_timestamp > ?
+                """, (room_hash, client_pubkey, sync_since))
+                return cursor.fetchone()[0]
+        except Exception as e:
+            logger.error(f"Failed to get unsynced count: {e}")
+            return 0
+
+    def delete_room_message(self, room_hash: str, message_id: int) -> bool:
+        """Delete a specific message by ID."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                cursor = conn.execute("""
+                    DELETE FROM room_messages
+                    WHERE room_hash = ? AND id = ?
+                """, (room_hash, message_id))
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Failed to delete message: {e}")
+            return False
+
+    def clear_room_messages(self, room_hash: str) -> int:
+        """Clear all messages from a room."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                cursor = conn.execute("""
+                    DELETE FROM room_messages WHERE room_hash = ?
+                """, (room_hash,))
+                return cursor.rowcount
+        except Exception as e:
+            logger.error(f"Failed to clear room messages: {e}")
+            return 0
+
     def cleanup_old_messages(self, room_hash: str, keep_count: int = 32) -> int:
         """Keep only the most recent N messages per room."""
         try:

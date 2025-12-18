@@ -59,6 +59,16 @@ logger = logging.getLogger("HTTPServer")
 # POST /api/acl_remove_client {"public_key": "...", "identity_hash": "0x42"} - Remove client from ACL
 # GET  /api/acl_stats - Overall ACL statistics
 
+# Room Server
+# GET  /api/room_messages?room_name=General&limit=50&offset=0 - Get messages from room
+# GET  /api/room_messages?room_hash=0x42&limit=50 - Get messages by hash
+# POST /api/room_post_message {"room_name": "General", "message": "Hello", "author_pubkey": "abc123"} - Post message
+# GET  /api/room_stats?room_name=General - Get room statistics
+# GET  /api/room_stats - Get all rooms statistics
+# GET  /api/room_clients?room_name=General - Get clients synced to room
+# DELETE /api/room_message?room_name=General&message_id=123 - Delete specific message
+# DELETE /api/room_messages?room_name=General - Clear all messages in room
+
 # Common Parameters
 # hours - Time range (default: 24)
 # resolution - 'average', 'max', 'min' (default: 'average')
@@ -1930,3 +1940,598 @@ class APIEndpoints:
         except Exception as e:
             logger.error(f"Error getting ACL stats: {e}")
             return self._error(e)
+
+    # ======================
+    # Room Server Endpoints
+    # ======================
+
+    def _get_room_server_by_name_or_hash(self, room_name=None, room_hash=None):
+        """Helper to get room server instance and metadata by name or hash."""
+        if not self.daemon_instance or not hasattr(self.daemon_instance, 'text_helper'):
+            raise Exception("Text helper not available")
+        
+        text_helper = self.daemon_instance.text_helper
+        if not text_helper or not hasattr(text_helper, 'room_servers'):
+            raise Exception("Room servers not initialized")
+        
+        identity_manager = text_helper.identity_manager
+        
+        # Find by name first
+        if room_name:
+            identities = identity_manager.get_identities_by_type("room_server")
+            for name, identity, config in identities:
+                if name == room_name:
+                    hash_byte = identity.get_public_key()[0]
+                    room_server = text_helper.room_servers.get(hash_byte)
+                    if room_server:
+                        return {
+                            'room_server': room_server,
+                            'name': name,
+                            'hash': hash_byte,
+                            'identity': identity,
+                            'config': config
+                        }
+            raise Exception(f"Room '{room_name}' not found")
+        
+        # Find by hash
+        if room_hash:
+            if isinstance(room_hash, str):
+                if room_hash.startswith('0x'):
+                    hash_byte = int(room_hash, 16)
+                else:
+                    hash_byte = int(room_hash)
+            else:
+                hash_byte = room_hash
+            
+            room_server = text_helper.room_servers.get(hash_byte)
+            if room_server:
+                # Find name
+                identities = identity_manager.get_identities_by_type("room_server")
+                for name, identity, config in identities:
+                    if identity.get_public_key()[0] == hash_byte:
+                        return {
+                            'room_server': room_server,
+                            'name': name,
+                            'hash': hash_byte,
+                            'identity': identity,
+                            'config': config
+                        }
+                # Found server but no name match
+                return {
+                    'room_server': room_server,
+                    'name': f"Room_0x{hash_byte:02X}",
+                    'hash': hash_byte,
+                    'identity': None,
+                    'config': {}
+                }
+            raise Exception(f"Room with hash {room_hash} not found")
+        
+        raise Exception("Must provide room_name or room_hash")
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def room_messages(self, room_name=None, room_hash=None, limit=50, offset=0, since_timestamp=None):
+        """
+        Get messages from a room server.
+        
+        Parameters:
+            room_name: Name of the room
+            room_hash: Hash of room identity (alternative to name)
+            limit: Max messages to return (default 50)
+            offset: Skip first N messages (default 0)
+            since_timestamp: Only return messages after this timestamp
+        
+        Returns:
+            {
+                "success": true,
+                "data": {
+                    "room_name": "General",
+                    "room_hash": "0x42",
+                    "messages": [
+                        {
+                            "id": 1,
+                            "author_pubkey": "abc123...",
+                            "author_prefix": "abc1",
+                            "post_timestamp": 1234567890.0,
+                            "sender_timestamp": 1234567890,
+                            "message_text": "Hello world",
+                            "txt_type": 0,
+                            "created_at": 1234567890.0
+                        }
+                    ],
+                    "count": 1,
+                    "total": 100,
+                    "limit": 50,
+                    "offset": 0
+                }
+            }
+        """
+        try:
+            room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
+            room_server = room_info['room_server']
+            
+            # Get messages from database
+            db = room_server.db
+            room_hash_str = f"0x{room_info['hash']:02X}"
+            
+            # Get total count
+            total_count = db.get_room_message_count(room_hash_str)
+            
+            # Get messages
+            if since_timestamp:
+                messages = db.get_messages_since(
+                    room_hash=room_hash_str,
+                    since_timestamp=float(since_timestamp),
+                    limit=int(limit)
+                )
+            else:
+                messages = db.get_room_messages(
+                    room_hash=room_hash_str,
+                    limit=int(limit),
+                    offset=int(offset)
+                )
+            
+            # Format messages with author prefix
+            formatted_messages = []
+            for msg in messages:
+                author_pubkey = msg['author_pubkey']
+                formatted_msg = {
+                    'id': msg['id'],
+                    'author_pubkey': author_pubkey,
+                    'author_prefix': author_pubkey[:8] if author_pubkey else '',
+                    'post_timestamp': msg['post_timestamp'],
+                    'sender_timestamp': msg['sender_timestamp'],
+                    'message_text': msg['message_text'],
+                    'txt_type': msg['txt_type'],
+                    'created_at': msg.get('created_at', msg['post_timestamp'])
+                }
+                formatted_messages.append(formatted_msg)
+            
+            return self._success({
+                'room_name': room_info['name'],
+                'room_hash': room_hash_str,
+                'messages': formatted_messages,
+                'count': len(formatted_messages),
+                'total': total_count,
+                'limit': int(limit),
+                'offset': int(offset)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting room messages: {e}", exc_info=True)
+            return self._error(e)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in()
+    def room_post_message(self):
+        """
+        Post a message to a room server.
+        
+        POST Body:
+            {
+                "room_name": "General",  // or "room_hash": "0x42"
+                "message": "Hello world",
+                "author_pubkey": "abc123...",  // hex string, or "server" for system messages
+                "txt_type": 0  // optional, default 0
+            }
+        
+        Special Values for author_pubkey:
+            - "server" or "system": Uses SERVER_AUTHOR_PUBKEY (all zeros), message goes to ALL clients
+            - Any other hex string: Normal behavior, message NOT sent to that client
+        
+        Returns:
+            {"success": true, "data": {"message_id": 123}}
+        """
+        try:
+            self._require_post()
+            
+            data = cherrypy.request.json
+            room_name = data.get('room_name')
+            room_hash = data.get('room_hash')
+            message = data.get('message')
+            author_pubkey = data.get('author_pubkey')
+            txt_type = data.get('txt_type', 0)
+            
+            if not message:
+                return self._error("message is required")
+            if not author_pubkey:
+                return self._error("author_pubkey is required")
+            
+            # Convert author_pubkey to bytes
+            try:
+                # Special case: "server" or "system" = all zeros (goes to ALL clients)
+                if isinstance(author_pubkey, str) and author_pubkey.lower() in ('server', 'system'):
+                    author_bytes = bytes(32)  # 32 zeros
+                    author_pubkey = author_bytes.hex()
+                elif isinstance(author_pubkey, str):
+                    author_bytes = bytes.fromhex(author_pubkey)
+                else:
+                    author_bytes = bytes(author_pubkey)
+            except Exception as e:
+                return self._error(f"Invalid author_pubkey: {e}")
+            
+            # Get room server
+            room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
+            room_server = room_info['room_server']
+            
+            # Add post to room (will be distributed asynchronously)
+            import asyncio
+            if self.event_loop:
+                sender_timestamp = int(time.time())
+                # SECURITY: API is allowed to use server author key (for system messages)
+                # TODO: Add authentication/authorization check before allowing this
+                is_server_author = (author_bytes == bytes(32))
+                future = asyncio.run_coroutine_threadsafe(
+                    room_server.add_post(
+                        client_pubkey=author_bytes,
+                        message_text=message,
+                        sender_timestamp=sender_timestamp,
+                        txt_type=txt_type,
+                        allow_server_author=is_server_author  # Allow server key from API
+                    ),
+                    self.event_loop
+                )
+                success = future.result(timeout=5)
+                
+                if success:
+                    # Get the message ID (last inserted)
+                    db = room_server.db
+                    room_hash_str = f"0x{room_info['hash']:02X}"
+                    messages = db.get_room_messages(room_hash_str, limit=1, offset=0)
+                    message_id = messages[0]['id'] if messages else None
+                    
+                    is_server_msg = author_pubkey == "0" * 64
+                    
+                    return self._success({
+                        'message_id': message_id,
+                        'room_name': room_info['name'],
+                        'room_hash': room_hash_str,
+                        'queued_for_distribution': True,
+                        'is_server_message': is_server_msg,
+                        'author_filter_note': 'Server messages go to ALL clients' if is_server_msg else 'Message will NOT be sent to author'
+                    })
+                else:
+                    return self._error("Failed to add message (rate limit or validation error)")
+            else:
+                return self._error("Event loop not available")
+                
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error posting room message: {e}", exc_info=True)
+            return self._error(e)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def room_stats(self, room_name=None, room_hash=None):
+        """
+        Get statistics for one or all room servers.
+        
+        Parameters:
+            room_name: Name of specific room (optional)
+            room_hash: Hash of specific room (optional)
+        
+        If no parameters, returns stats for all rooms.
+        
+        Returns:
+            {
+                "success": true,
+                "data": {
+                    "room_name": "General",
+                    "room_hash": "0x42",
+                    "total_messages": 100,
+                    "total_clients": 5,
+                    "active_clients": 3,
+                    "max_posts": 32,
+                    "sync_running": true,
+                    "clients": [
+                        {
+                            "pubkey": "abc123...",
+                            "pubkey_prefix": "abc1",
+                            "sync_since": 1234567890.0,
+                            "unsynced_count": 2,
+                            "pending_ack": false,
+                            "push_failures": 0,
+                            "last_activity": 1234567890.0
+                        }
+                    ]
+                }
+            }
+        """
+        try:
+            if not self.daemon_instance or not hasattr(self.daemon_instance, 'text_helper'):
+                return self._error("Text helper not available")
+            
+            text_helper = self.daemon_instance.text_helper
+            
+            # Get all rooms if no specific room requested
+            if not room_name and not room_hash:
+                all_rooms = []
+                for hash_byte, room_server in text_helper.room_servers.items():
+                    # Find room name
+                    room_name_found = f"Room_0x{hash_byte:02X}"
+                    identities = text_helper.identity_manager.get_identities_by_type("room_server")
+                    for name, identity, config in identities:
+                        if identity.get_public_key()[0] == hash_byte:
+                            room_name_found = name
+                            break
+                    
+                    db = room_server.db
+                    room_hash_str = f"0x{hash_byte:02X}"
+                    
+                    # Get basic stats
+                    total_messages = db.get_room_message_count(room_hash_str)
+                    all_clients_sync = db.get_all_room_clients(room_hash_str)
+                    active_clients = sum(1 for c in all_clients_sync if c.get('last_activity', 0) > 0)
+                    
+                    all_rooms.append({
+                        'room_name': room_name_found,
+                        'room_hash': room_hash_str,
+                        'total_messages': total_messages,
+                        'total_clients': len(all_clients_sync),
+                        'active_clients': active_clients,
+                        'max_posts': room_server.max_posts,
+                        'sync_running': room_server._running
+                    })
+                
+                return self._success({
+                    'rooms': all_rooms,
+                    'total_rooms': len(all_rooms)
+                })
+            
+            # Get specific room stats
+            room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
+            room_server = room_info['room_server']
+            db = room_server.db
+            room_hash_str = f"0x{room_info['hash']:02X}"
+            
+            # Get message count
+            total_messages = db.get_room_message_count(room_hash_str)
+            
+            # Get client sync states
+            all_clients_sync = db.get_all_room_clients(room_hash_str)
+            
+            # Get ACL for this room
+            acl = None
+            if room_info['hash'] in text_helper.acl_dict:
+                acl = text_helper.acl_dict[room_info['hash']]
+            
+            # Format client info
+            clients_info = []
+            active_count = 0
+            for client_sync in all_clients_sync:
+                pubkey_hex = client_sync['client_pubkey']
+                pubkey_bytes = bytes.fromhex(pubkey_hex)
+                
+                # Check if still in ACL
+                in_acl = False
+                if acl:
+                    acl_clients = acl.get_all_clients()
+                    in_acl = any(c.id.get_public_key() == pubkey_bytes for c in acl_clients)
+                
+                unsynced_count = db.get_unsynced_count(
+                    room_hash=room_hash_str,
+                    client_pubkey=pubkey_hex,
+                    sync_since=client_sync.get('sync_since', 0)
+                )
+                
+                is_active = client_sync.get('last_activity', 0) > 0
+                if is_active:
+                    active_count += 1
+                
+                clients_info.append({
+                    'pubkey': pubkey_hex,
+                    'pubkey_prefix': pubkey_hex[:8],
+                    'sync_since': client_sync.get('sync_since', 0),
+                    'unsynced_count': unsynced_count,
+                    'pending_ack': client_sync.get('pending_ack_crc', 0) != 0,
+                    'pending_ack_crc': client_sync.get('pending_ack_crc', 0),
+                    'push_failures': client_sync.get('push_failures', 0),
+                    'last_activity': client_sync.get('last_activity', 0),
+                    'in_acl': in_acl,
+                    'is_active': is_active
+                })
+            
+            return self._success({
+                'room_name': room_info['name'],
+                'room_hash': room_hash_str,
+                'total_messages': total_messages,
+                'total_clients': len(all_clients_sync),
+                'active_clients': active_count,
+                'max_posts': room_server.max_posts,
+                'sync_running': room_server._running,
+                'next_push_time': room_server.next_push_time,
+                'last_cleanup_time': room_server.last_cleanup_time,
+                'clients': clients_info
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting room stats: {e}", exc_info=True)
+            return self._error(e)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def room_clients(self, room_name=None, room_hash=None):
+        """
+        Get list of clients synced to a room.
+        
+        Parameters:
+            room_name: Name of the room
+            room_hash: Hash of room identity
+        
+        Returns:
+            {
+                "success": true,
+                "data": {
+                    "room_name": "General",
+                    "room_hash": "0x42",
+                    "clients": [...]
+                }
+            }
+        """
+        try:
+            # Reuse room_stats logic but return only clients
+            stats = self.room_stats(room_name=room_name, room_hash=room_hash)
+            if stats.get('success') and 'clients' in stats.get('data', {}):
+                data = stats['data']
+                return self._success({
+                    'room_name': data['room_name'],
+                    'room_hash': data['room_hash'],
+                    'clients': data['clients'],
+                    'total': len(data['clients']),
+                    'active': data['active_clients']
+                })
+            else:
+                return stats
+        except Exception as e:
+            logger.error(f"Error getting room clients: {e}")
+            return self._error(e)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def room_message(self, room_name=None, room_hash=None, message_id=None):
+        """
+        Delete a specific message from a room.
+        
+        Parameters:
+            room_name: Name of the room
+            room_hash: Hash of room identity
+            message_id: ID of message to delete
+        
+        Returns:
+            {"success": true}
+        """
+        try:
+            if cherrypy.request.method != "DELETE":
+                cherrypy.response.status = 405
+                return self._error("Method not allowed. Use DELETE.")
+            
+            if not message_id:
+                return self._error("message_id is required")
+            
+            room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
+            room_server = room_info['room_server']
+            db = room_server.db
+            room_hash_str = f"0x{room_info['hash']:02X}"
+            
+            # Delete message
+            deleted = db.delete_room_message(room_hash_str, int(message_id))
+            
+            if deleted:
+                return self._success({
+                    'deleted': True,
+                    'message_id': int(message_id),
+                    'room_name': room_info['name']
+                })
+            else:
+                return self._error("Message not found or already deleted")
+                
+        except Exception as e:
+            logger.error(f"Error deleting room message: {e}")
+            return self._error(e)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def room_messages_clear(self, room_name=None, room_hash=None):
+        """
+        Clear all messages from a room.
+        
+        Parameters:
+            room_name: Name of the room
+            room_hash: Hash of room identity
+        
+        Returns:
+            {"success": true, "data": {"deleted_count": 123}}
+        """
+        try:
+            if cherrypy.request.method != "DELETE":
+                cherrypy.response.status = 405
+                return self._error("Method not allowed. Use DELETE.")
+            
+            room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
+            room_server = room_info['room_server']
+            db = room_server.db
+            room_hash_str = f"0x{room_info['hash']:02X}"
+            
+            # Get count before deleting
+            count_before = db.get_room_message_count(room_hash_str)
+            
+            # Clear all messages
+            deleted = db.clear_room_messages(room_hash_str)
+            
+            return self._success({
+                'deleted_count': deleted or count_before,
+                'room_name': room_info['name'],
+                'room_hash': room_hash_str
+            })
+            
+        except Exception as e:
+            logger.error(f"Error clearing room messages: {e}")
+            return self._error(e)
+
+    # ======================
+    # OpenAPI Documentation
+    # ======================
+
+    @cherrypy.expose
+    def openapi(self):
+        """Serve OpenAPI specification in YAML format."""
+        import os
+        spec_path = os.path.join(os.path.dirname(__file__), 'openapi.yaml')
+        try:
+            with open(spec_path, 'r') as f:
+                spec_content = f.read()
+            cherrypy.response.headers['Content-Type'] = 'application/x-yaml'
+            return spec_content
+        except FileNotFoundError:
+            cherrypy.response.status = 404
+            return "OpenAPI spec not found"
+        except Exception as e:
+            cherrypy.response.status = 500
+            return f"Error loading OpenAPI spec: {e}"
+
+    @cherrypy.expose
+    def docs(self):
+        """Serve Swagger UI for interactive API documentation."""
+        swagger_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>pyMC Repeater API Documentation</title>
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+    <style>
+        body { margin: 0; padding: 0; }
+        .topbar { display: none !important; }
+    </style>
+</head>
+<body>
+    <div id="swagger-ui"></div>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+    <script>
+        window.onload = function() {
+            SwaggerUIBundle({
+                url: '/api/openapi',
+                dom_id: '#swagger-ui',
+                deepLinking: true,
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIStandalonePreset
+                ],
+                plugins: [
+                    SwaggerUIBundle.plugins.DownloadUrl
+                ],
+                layout: "StandaloneLayout",
+                tryItOutEnabled: true,
+                filter: true,
+                displayRequestDuration: true,
+                persistAuthorization: true
+            });
+        };
+    </script>
+</body>
+</html>"""
+        cherrypy.response.headers['Content-Type'] = 'text/html'
+        return swagger_html

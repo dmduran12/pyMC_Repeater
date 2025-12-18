@@ -1,0 +1,639 @@
+openapi: 3.0.0
+info:
+  title: pyMC Repeater API
+  description: |
+    REST API for pyMC Repeater - LoRa mesh network repeater with room server functionality.
+    
+    ## Features
+    - System statistics and monitoring
+    - Packet history and analysis
+    - Identity management
+    - Access Control Lists (ACL)
+    - Room server messaging
+    - CAD calibration
+    - Noise floor monitoring
+  version: 1.0.0
+  contact:
+    name: pyMC Repeater
+    url: https://github.com/yourusername/pymc_repeater
+
+servers:
+  - url: http://localhost:8080/api
+    description: Local development server
+  - url: http://{host}:8080/api
+    description: Custom host
+    variables:
+      host:
+        default: localhost
+        description: Repeater IP address
+
+tags:
+  - name: System
+    description: System statistics and control
+  - name: Packets
+    description: Packet history and statistics
+  - name: Charts
+    description: Graph data and RRD metrics
+  - name: Noise Floor
+    description: Noise floor monitoring
+  - name: CAD Calibration
+    description: Channel Activity Detection calibration
+  - name: Identities
+    description: Identity management
+  - name: ACL
+    description: Access Control Lists
+  - name: Room Server
+    description: Room server messaging
+
+paths:
+  /stats:
+    get:
+      tags: [System]
+      summary: Get system statistics
+      description: Returns repeater uptime, packet counts, and version information
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uptime_secs:
+                    type: integer
+                    example: 3600
+                  packets_received:
+                    type: integer
+                    example: 150
+                  packets_sent:
+                    type: integer
+                    example: 120
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  core_version:
+                    type: string
+                    example: "0.5.0"
+
+  /send_advert:
+    post:
+      tags: [System]
+      summary: Send repeater advertisement
+      description: Manually trigger sending a repeater advertisement packet
+      responses:
+        '200':
+          description: Advertisement sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '405':
+          description: Method not allowed
+
+  /set_mode:
+    post:
+      tags: [System]
+      summary: Set repeater mode
+      description: Switch between forward and monitor modes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [forward, monitor]
+                  example: forward
+      responses:
+        '200':
+          description: Mode changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /packet_stats:
+    get:
+      tags: [Packets]
+      summary: Get packet statistics
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+            default: 24
+          description: Time range in hours
+      responses:
+        '200':
+          description: Packet statistics
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /packet_by_hash:
+    get:
+      tags: [Packets]
+      summary: Get packet by hash
+      parameters:
+        - name: packet_hash
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Packet hash to lookup
+      responses:
+        '200':
+          description: Packet details
+
+  /noise_floor_history:
+    get:
+      tags: [Noise Floor]
+      summary: Get noise floor history
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+            default: 24
+      responses:
+        '200':
+          description: Noise floor history data
+
+  /noise_floor_stats:
+    get:
+      tags: [Noise Floor]
+      summary: Get noise floor statistics
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+            default: 24
+      responses:
+        '200':
+          description: Noise floor stats
+
+  /cad_calibration_start:
+    post:
+      tags: [CAD Calibration]
+      summary: Start CAD calibration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                samples:
+                  type: integer
+                  default: 8
+                delay:
+                  type: integer
+                  default: 100
+      responses:
+        '200':
+          description: Calibration started
+
+  /cad_calibration_stop:
+    post:
+      tags: [CAD Calibration]
+      summary: Stop CAD calibration
+      responses:
+        '200':
+          description: Calibration stopped
+
+  /identities:
+    get:
+      tags: [Identities]
+      summary: List all identities
+      responses:
+        '200':
+          description: List of identities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      identities:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Identity'
+
+  /identity:
+    get:
+      tags: [Identities]
+      summary: Get specific identity
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Identity details
+
+  /create_identity:
+    post:
+      tags: [Identities]
+      summary: Create new identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type]
+              properties:
+                name:
+                  type: string
+                identity_key:
+                  type: string
+                type:
+                  type: string
+                  enum: [repeater, room_server]
+                settings:
+                  type: object
+      responses:
+        '200':
+          description: Identity created
+
+  /acl_info:
+    get:
+      tags: [ACL]
+      summary: Get ACL configuration
+      description: Returns ACL settings and statistics for all identities
+      responses:
+        '200':
+          description: ACL information
+
+  /acl_clients:
+    get:
+      tags: [ACL]
+      summary: List authenticated clients
+      parameters:
+        - name: identity_hash
+          in: query
+          schema:
+            type: string
+          example: "0x42"
+        - name: identity_name
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Client list
+
+  /acl_remove_client:
+    post:
+      tags: [ACL]
+      summary: Remove client from ACL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_key, identity_hash]
+              properties:
+                public_key:
+                  type: string
+                identity_hash:
+                  type: string
+      responses:
+        '200':
+          description: Client removed
+
+  /acl_stats:
+    get:
+      tags: [ACL]
+      summary: Get ACL statistics
+      responses:
+        '200':
+          description: ACL statistics
+
+  /room_messages:
+    get:
+      tags: [Room Server]
+      summary: Get room messages
+      description: Retrieve messages from a room with pagination
+      parameters:
+        - name: room_name
+          in: query
+          schema:
+            type: string
+          example: General
+        - name: room_hash
+          in: query
+          schema:
+            type: string
+          example: "0x42"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: since_timestamp
+          in: query
+          schema:
+            type: number
+            format: float
+      responses:
+        '200':
+          description: Messages retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      room_name:
+                        type: string
+                      room_hash:
+                        type: string
+                      messages:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RoomMessage'
+                      count:
+                        type: integer
+                      total:
+                        type: integer
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+
+  /room_post_message:
+    post:
+      tags: [Room Server]
+      summary: Post message to room
+      description: |
+        Add a new message to a room server. Message will be distributed to all synced clients.
+        
+        **Special author values:**
+        - `"server"` or `"system"` - System message, goes to ALL clients
+        - Any hex string - Normal message, NOT sent to that client
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message, author_pubkey]
+              properties:
+                room_name:
+                  type: string
+                  example: General
+                room_hash:
+                  type: string
+                  example: "0x42"
+                message:
+                  type: string
+                  maxLength: 160
+                  example: "Hello from API"
+                author_pubkey:
+                  type: string
+                  example: "abc123def456..."
+                  description: "Hex string or 'server' for system messages"
+                txt_type:
+                  type: integer
+                  default: 0
+      responses:
+        '200':
+          description: Message posted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      message_id:
+                        type: integer
+                      room_name:
+                        type: string
+                      room_hash:
+                        type: string
+                      queued_for_distribution:
+                        type: boolean
+                      is_server_message:
+                        type: boolean
+                      author_filter_note:
+                        type: string
+
+  /room_stats:
+    get:
+      tags: [Room Server]
+      summary: Get room statistics
+      description: Get detailed statistics for one or all rooms
+      parameters:
+        - name: room_name
+          in: query
+          schema:
+            type: string
+        - name: room_hash
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Room statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      room_name:
+                        type: string
+                      room_hash:
+                        type: string
+                      total_messages:
+                        type: integer
+                      total_clients:
+                        type: integer
+                      active_clients:
+                        type: integer
+                      max_posts:
+                        type: integer
+                        example: 32
+                      sync_running:
+                        type: boolean
+                      clients:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RoomClient'
+
+  /room_clients:
+    get:
+      tags: [Room Server]
+      summary: Get room clients
+      parameters:
+        - name: room_name
+          in: query
+          schema:
+            type: string
+        - name: room_hash
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Client list
+
+  /room_message:
+    delete:
+      tags: [Room Server]
+      summary: Delete specific message
+      parameters:
+        - name: room_name
+          in: query
+          schema:
+            type: string
+        - name: room_hash
+          in: query
+          schema:
+            type: string
+        - name: message_id
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Message deleted
+
+  /room_messages_clear:
+    delete:
+      tags: [Room Server]
+      summary: Clear all room messages
+      description: ⚠️ Destructive operation - cannot be undone!
+      parameters:
+        - name: room_name
+          in: query
+          schema:
+            type: string
+        - name: room_hash
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Messages cleared
+
+components:
+  schemas:
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+
+    Identity:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [repeater, room_server]
+        hash:
+          type: string
+        public_key:
+          type: string
+
+    RoomMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+        author_pubkey:
+          type: string
+        author_prefix:
+          type: string
+        post_timestamp:
+          type: number
+          format: float
+        sender_timestamp:
+          type: integer
+        message_text:
+          type: string
+        txt_type:
+          type: integer
+        created_at:
+          type: number
+          format: float
+
+    RoomClient:
+      type: object
+      properties:
+        pubkey:
+          type: string
+        pubkey_prefix:
+          type: string
+        sync_since:
+          type: number
+          format: float
+        unsynced_count:
+          type: integer
+        pending_ack:
+          type: boolean
+        push_failures:
+          type: integer
+        last_activity:
+          type: number
+          format: float
+        in_acl:
+          type: boolean
+        is_active:
+          type: boolean
+
+  securitySchemes:
+    # Future: API key authentication
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key authentication (not yet implemented)
+
+# Future security - currently open
+# security:
+#   - ApiKeyAuth: []
