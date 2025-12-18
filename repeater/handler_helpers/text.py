@@ -8,9 +8,11 @@ Also handles CLI commands for admin users on the repeater identity.
 
 import asyncio
 import logging
+import struct
 
 from pymc_core.node.handlers.text import TextMessageHandler
 from .repeater_cli import RepeaterCLI
+from .room_server import RoomServer
 
 logger = logging.getLogger("TextHelper")
 
@@ -18,15 +20,20 @@ logger = logging.getLogger("TextHelper")
 class TextHelper:
 
     def __init__(self, identity_manager, packet_injector=None, acl_dict=None, log_fn=None, 
-                 config_path: str = None, config: dict = None, save_config_callback=None):
+                 config_path: str = None, config: dict = None, save_config_callback=None,
+                 sqlite_handler=None):
 
         self.identity_manager = identity_manager
         self.packet_injector = packet_injector
         self.log_fn = log_fn or logger.info
         self.acl_dict = acl_dict or {}  # Per-identity ACLs keyed by hash_byte
+        self.sqlite_handler = sqlite_handler  # For room server database operations
         
         # Dictionary of handlers keyed by dest_hash
         self.handlers = {}
+        
+        # Dictionary of room servers keyed by dest_hash
+        self.room_servers = {}
         
         # Track repeater identity for CLI commands
         self.repeater_hash = None
@@ -78,6 +85,44 @@ class TextHelper:
         if identity_type == "repeater":
             self.repeater_hash = hash_byte
             logger.info(f"Set repeater hash for CLI: 0x{hash_byte:02X}")
+        
+        # Create RoomServer instance for room_server identities
+        if identity_type == "room_server" and self.sqlite_handler:
+            try:
+                from .room_server import MAX_UNSYNCED_POSTS
+                
+                room_config = radio_config or {}
+                max_posts = room_config.get('max_posts', MAX_UNSYNCED_POSTS)
+                
+                # Enforce hard limit
+                if max_posts > MAX_UNSYNCED_POSTS:
+                    logger.warning(
+                        f"Room '{name}': Configured max_posts={max_posts} exceeds hard limit "
+                        f"of {MAX_UNSYNCED_POSTS}, capping to {MAX_UNSYNCED_POSTS}"
+                    )
+                    max_posts = MAX_UNSYNCED_POSTS
+                
+                room_server = RoomServer(
+                    room_hash=hash_byte,
+                    room_name=name,
+                    local_identity=identity,
+                    sqlite_handler=self.sqlite_handler,
+                    packet_injector=self.packet_injector,
+                    acl=identity_acl,
+                    max_posts=max_posts
+                )
+                
+                self.room_servers[hash_byte] = room_server
+                
+                # Start sync loop
+                asyncio.create_task(room_server.start())
+                
+                logger.info(
+                    f"Registered room server '{name}': hash=0x{hash_byte:02X}, "
+                    f"max_posts={max_posts}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to create room server '{name}': {e}", exc_info=True)
         
         logger.info(
             f"Registered {identity_type} '{name}' text handler: hash=0x{hash_byte:02X}"
@@ -171,6 +216,43 @@ class TextHelper:
                 f"[{identity_type}:{identity_name}] Message: {message_text}"
             )
             
+            # Handle room server messages - store to database
+            if identity_type == "room_server" and dest_hash in self.room_servers:
+                try:
+                    room_server = self.room_servers[dest_hash]
+                    
+                    # Get sender's full public key from ACL
+                    identity_acl = self.acl_dict.get(dest_hash)
+                    sender_pubkey = bytes([src_hash]) + b'\x00' * 31  # Default
+                    if identity_acl:
+                        for client_info in identity_acl.get_all_clients():
+                            if client_info.id.get_public_key()[0] == src_hash:
+                                sender_pubkey = client_info.id.get_public_key()
+                                break
+                    
+                    # Extract timestamp and txt_type from decrypted data
+                    # Packet decryption already happened in TextMessageHandler
+                    # We need to extract from original payload if available
+                    sender_timestamp = int(packet.decrypted.get('timestamp', 0)) if hasattr(packet, 'decrypted') else 0
+                    txt_type = 0  # TXT_TYPE_PLAIN by default
+                    
+                    # Store message to room database
+                    await room_server.add_post(
+                        client_pubkey=sender_pubkey,
+                        message_text=message_text,
+                        sender_timestamp=sender_timestamp,
+                        txt_type=txt_type
+                    )
+                    
+                    logger.info(
+                        f"Room '{identity_name}': Stored message from 0x{src_hash:02X}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to store room message: {e}", exc_info=True)
+                
+                # Room messages don't need further processing
+                return
+            
             # Check if this is a CLI command to the repeater (AFTER decryption)
             if dest_hash == self.repeater_hash and self.cli and self._is_cli_command(message_text):
                 try:
@@ -234,6 +316,17 @@ class TextHelper:
             }
             for hash_byte, info in self.handlers.items()
         ]
+    
+    async def cleanup(self):
+        """Cleanup room servers and handlers."""
+        # Stop all room server sync loops
+        for room_server in self.room_servers.values():
+            try:
+                await room_server.stop()
+            except Exception as e:
+                logger.error(f"Error stopping room server: {e}")
+        
+        logger.info("TextHelper cleanup complete")
     
     def _is_cli_command(self, message: str) -> bool:
         """Check if message looks like a CLI command."""

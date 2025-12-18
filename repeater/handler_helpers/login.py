@@ -76,12 +76,13 @@ class LoginHelper:
         logger.info(f"Created ACL for {identity_type} '{name}': hash=0x{hash_byte:02X}")
         
         # Create auth callback that uses this identity's ACL
-        def auth_callback_with_context(client_identity, shared_secret, password, timestamp):
+        def auth_callback_with_context(client_identity, shared_secret, password, timestamp, sync_since=None):
             return identity_acl.authenticate_client(
                 client_identity=client_identity,
                 shared_secret=shared_secret,
                 password=password,
                 timestamp=timestamp,
+                sync_since=sync_since,
                 target_identity_hash=hash_byte,
                 target_identity_name=name,
                 target_identity_config=config

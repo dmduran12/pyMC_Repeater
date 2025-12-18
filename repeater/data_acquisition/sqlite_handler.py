@@ -101,6 +101,41 @@ class SQLiteHandler:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_transport_keys_name ON transport_keys(name)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_transport_keys_parent ON transport_keys(parent_id)")
                 
+                # Room server tables
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS room_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        room_hash TEXT NOT NULL,
+                        author_pubkey TEXT NOT NULL,
+                        post_timestamp REAL NOT NULL,
+                        sender_timestamp REAL,
+                        message_text TEXT NOT NULL,
+                        txt_type INTEGER NOT NULL,
+                        created_at REAL NOT NULL
+                    )
+                """)
+                
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS room_client_sync (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        room_hash TEXT NOT NULL,
+                        client_pubkey TEXT NOT NULL,
+                        sync_since REAL NOT NULL DEFAULT 0,
+                        pending_ack_crc INTEGER DEFAULT 0,
+                        push_post_timestamp REAL DEFAULT 0,
+                        ack_timeout_time REAL DEFAULT 0,
+                        push_failures INTEGER DEFAULT 0,
+                        last_activity REAL NOT NULL,
+                        updated_at REAL NOT NULL,
+                        UNIQUE(room_hash, client_pubkey)
+                    )
+                """)
+                
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_room_messages_room ON room_messages(room_hash, post_timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_room_messages_author ON room_messages(author_pubkey)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_room_client_sync_room ON room_client_sync(room_hash, client_pubkey)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_room_client_sync_pending ON room_client_sync(pending_ack_crc)")
+                
                 conn.commit()
                 logger.info(f"SQLite database initialized: {self.sqlite_path}")
                 
@@ -869,3 +904,171 @@ class SQLiteHandler:
         except Exception as e:
             logger.error(f"Failed to delete advert: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Room Server Methods
+    # ------------------------------------------------------------------
+
+    def insert_room_message(self, room_hash: str, author_pubkey: str, message_text: str, 
+                           post_timestamp: float, sender_timestamp: float = None, 
+                           txt_type: int = 0) -> Optional[int]:
+        """Insert a new room message and return its ID."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                cursor = conn.execute("""
+                    INSERT INTO room_messages (
+                        room_hash, author_pubkey, post_timestamp, sender_timestamp,
+                        message_text, txt_type, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    room_hash, author_pubkey, post_timestamp, sender_timestamp,
+                    message_text, txt_type, time.time()
+                ))
+                return cursor.lastrowid
+        except Exception as e:
+            logger.error(f"Failed to insert room message: {e}")
+            return None
+
+    def get_unsynced_messages(self, room_hash: str, client_pubkey: str, 
+                             sync_since: float, limit: int = 100) -> List[Dict]:
+        """Get messages for a room that client hasn't synced yet."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT * FROM room_messages
+                    WHERE room_hash = ? 
+                    AND post_timestamp > ?
+                    AND author_pubkey != ?
+                    ORDER BY post_timestamp ASC
+                    LIMIT ?
+                """, (room_hash, sync_since, client_pubkey, limit))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to get unsynced messages: {e}")
+            return []
+
+    def get_unsynced_count(self, room_hash: str, client_pubkey: str, sync_since: float) -> int:
+        """Count unsynced messages for a client."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                cursor = conn.execute("""
+                    SELECT COUNT(*) FROM room_messages
+                    WHERE room_hash = ? 
+                    AND post_timestamp > ?
+                    AND author_pubkey != ?
+                """, (room_hash, sync_since, client_pubkey))
+                return cursor.fetchone()[0]
+        except Exception as e:
+            logger.error(f"Failed to count unsynced messages: {e}")
+            return 0
+
+    def upsert_client_sync(self, room_hash: str, client_pubkey: str, **kwargs) -> bool:
+        """Insert or update client sync state."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                # Check if exists
+                cursor = conn.execute("""
+                    SELECT id FROM room_client_sync 
+                    WHERE room_hash = ? AND client_pubkey = ?
+                """, (room_hash, client_pubkey))
+                existing = cursor.fetchone()
+                
+                kwargs['updated_at'] = time.time()
+                
+                if existing:
+                    # Update
+                    set_clauses = []
+                    values = []
+                    for key, value in kwargs.items():
+                        set_clauses.append(f"{key} = ?")
+                        values.append(value)
+                    values.extend([room_hash, client_pubkey])
+                    
+                    conn.execute(f"""
+                        UPDATE room_client_sync 
+                        SET {', '.join(set_clauses)}
+                        WHERE room_hash = ? AND client_pubkey = ?
+                    """, values)
+                else:
+                    # Insert with defaults
+                    kwargs.setdefault('sync_since', 0)
+                    kwargs.setdefault('pending_ack_crc', 0)
+                    kwargs.setdefault('push_post_timestamp', 0)
+                    kwargs.setdefault('ack_timeout_time', 0)
+                    kwargs.setdefault('push_failures', 0)
+                    kwargs.setdefault('last_activity', time.time())
+                    
+                    columns = ['room_hash', 'client_pubkey'] + list(kwargs.keys())
+                    placeholders = ['?'] * len(columns)
+                    values = [room_hash, client_pubkey] + list(kwargs.values())
+                    
+                    conn.execute(f"""
+                        INSERT INTO room_client_sync ({', '.join(columns)})
+                        VALUES ({', '.join(placeholders)})
+                    """, values)
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to upsert client sync: {e}")
+            return False
+
+    def get_client_sync(self, room_hash: str, client_pubkey: str) -> Optional[Dict]:
+        """Get client sync state."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT * FROM room_client_sync
+                    WHERE room_hash = ? AND client_pubkey = ?
+                """, (room_hash, client_pubkey))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Failed to get client sync: {e}")
+            return None
+
+    def get_all_room_clients(self, room_hash: str) -> List[Dict]:
+        """Get all clients for a room."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT * FROM room_client_sync
+                    WHERE room_hash = ?
+                    ORDER BY last_activity DESC
+                """, (room_hash,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to get room clients: {e}")
+            return []
+
+    def cleanup_old_messages(self, room_hash: str, keep_count: int = 32) -> int:
+        """Keep only the most recent N messages per room."""
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                # First check if cleanup is needed
+                cursor = conn.execute("""
+                    SELECT COUNT(*) FROM room_messages WHERE room_hash = ?
+                """, (room_hash,))
+                total_count = cursor.fetchone()[0]
+                
+                if total_count <= keep_count:
+                    return 0  # No cleanup needed
+                
+                # Delete old messages
+                cursor = conn.execute("""
+                    DELETE FROM room_messages
+                    WHERE room_hash = ?
+                    AND id NOT IN (
+                        SELECT id FROM room_messages
+                        WHERE room_hash = ?
+                        ORDER BY post_timestamp DESC
+                        LIMIT ?
+                    )
+                """, (room_hash, room_hash, keep_count))
+                return cursor.rowcount
+        except Exception as e:
+            logger.error(f"Failed to cleanup old messages: {e}")
+            return 0

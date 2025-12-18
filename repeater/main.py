@@ -196,6 +196,7 @@ class RepeaterDaemon:
                 config_path=getattr(self, 'config_path', None),  # For CLI to save changes
                 config=self.config,  # For CLI to read/modify settings
                 save_config_callback=lambda: self._save_config(getattr(self, 'config_path', '/tmp/config.yaml')),  # For CLI to persist changes
+                sqlite_handler=self.repeater_handler.storage.sqlite if self.repeater_handler and self.repeater_handler.storage else None,  # For room server database
             )
             
             # Register default repeater identity for text messages
@@ -212,7 +213,7 @@ class RepeaterDaemon:
                     name=name,
                     identity=identity,
                     identity_type="room_server",
-                    radio_config=self.config.get("radio", {})
+                    radio_config=config  # Pass room-specific config (includes max_posts, etc.)
                 )
             
             logger.info("Text message processing helper initialized")
