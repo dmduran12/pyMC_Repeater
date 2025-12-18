@@ -2483,13 +2483,13 @@ class APIEndpoints:
             with open(spec_path, 'r') as f:
                 spec_content = f.read()
             cherrypy.response.headers['Content-Type'] = 'application/x-yaml'
-            return spec_content
+            return spec_content.encode('utf-8')
         except FileNotFoundError:
             cherrypy.response.status = 404
-            return "OpenAPI spec not found"
+            return b"OpenAPI spec not found"
         except Exception as e:
             cherrypy.response.status = 500
-            return f"Error loading OpenAPI spec: {e}"
+            return f"Error loading OpenAPI spec: {e}".encode('utf-8')
 
     @cherrypy.expose
     def docs(self):
@@ -2534,4 +2534,4 @@ class APIEndpoints:
 </body>
 </html>"""
         cherrypy.response.headers['Content-Type'] = 'text/html'
-        return swagger_html
+        return swagger_html.encode('utf-8')
