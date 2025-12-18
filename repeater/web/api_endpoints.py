@@ -2069,6 +2069,12 @@ class APIEndpoints:
                 }
             }
         """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             room_info = self._get_room_server_by_name_or_hash(room_name, room_hash)
             room_server = room_info['room_server']
@@ -2094,7 +2100,8 @@ class APIEndpoints:
                     offset=int(offset)
                 )
             
-            # Format messages with author prefix
+            # Format messages with author prefix and lookup sender names
+            storage = self._get_storage()
             formatted_messages = []
             for msg in messages:
                 author_pubkey = msg['author_pubkey']
@@ -2108,6 +2115,13 @@ class APIEndpoints:
                     'txt_type': msg['txt_type'],
                     'created_at': msg.get('created_at', msg['post_timestamp'])
                 }
+                
+                # Lookup sender name from adverts table
+                if author_pubkey:
+                    author_name = storage.get_node_name_by_pubkey(author_pubkey)
+                    if author_name:
+                        formatted_msg['author_name'] = author_name
+                
                 formatted_messages.append(formatted_msg)
             
             return self._success({
@@ -2146,6 +2160,12 @@ class APIEndpoints:
         Returns:
             {"success": true, "data": {"message_id": 123}}
         """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             self._require_post()
             
@@ -2268,6 +2288,12 @@ class APIEndpoints:
                 }
             }
         """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             if not self.daemon_instance or not hasattr(self.daemon_instance, 'text_helper'):
                 return self._error("Text helper not available")
@@ -2399,6 +2425,12 @@ class APIEndpoints:
                 }
             }
         """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             # Reuse room_stats logic but return only clients
             stats = self.room_stats(room_name=room_name, room_hash=room_hash)
@@ -2431,6 +2463,12 @@ class APIEndpoints:
         Returns:
             {"success": true}
         """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             if cherrypy.request.method != "DELETE":
                 cherrypy.response.status = 405
@@ -2473,6 +2511,12 @@ class APIEndpoints:
         Returns:
             {"success": true, "data": {"deleted_count": 123}}
         """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             if cherrypy.request.method != "DELETE":
                 cherrypy.response.status = 405

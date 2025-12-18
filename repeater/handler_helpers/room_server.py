@@ -207,12 +207,24 @@ class RoomServer:
                     f"{client_pubkey[:4].hex()}: {message_text[:50]}"
                 )
                 
-                # Update client activity timestamp (they're clearly active if posting)
-                # This prevents them from being evicted while they're actively posting
+                # Log authenticated clients count for debugging distribution
+                all_clients = self.acl.get_all_clients()
+                logger.info(
+                    f"Room '{self.room_name}': Message stored, will distribute to "
+                    f"{len(all_clients)} authenticated client(s)"
+                )
+                
+                # Update client's sync_since to this message's timestamp
+                # This prevents the author from receiving their own message back
+                # Also update activity timestamp (they're clearly active if posting)
+                logger.debug(
+                    f"Room '{self.room_name}': Updating author's sync_since to {post_timestamp} "
+                    f"to prevent echo"
+                )
                 self.db.upsert_client_sync(
                     room_hash=f"0x{self.room_hash:02X}",
                     client_pubkey=client_pubkey.hex(),
-                    sync_since=0,  # Will be preserved if already set
+                    sync_since=post_timestamp,  # Don't send this message back to author
                     last_activity=time.time()
                 )
                 
@@ -488,8 +500,14 @@ class RoomServer:
                 # Get all clients for this room
                 all_clients = self.acl.get_all_clients()
                 if not all_clients:
+                    logger.debug(f"Room '{self.room_name}': No authenticated clients found")
                     self.next_push_time = time.time() + 1.0  # Check again in 1 second
                     continue
+                
+                logger.debug(
+                    f"Room '{self.room_name}': Found {len(all_clients)} authenticated client(s), "
+                    f"checking for unsynced messages"
+                )
                 
                 # SAFETY: Limit number of clients
                 if len(all_clients) > MAX_CLIENTS_PER_ROOM:
@@ -555,6 +573,12 @@ class RoomServer:
                             last_activity=time.time()
                         )
                     
+                    # Log the sync check for debugging
+                    logger.debug(
+                        f"Room '{self.room_name}': Checking client 0x{client.id.get_public_key()[0]:02X} "
+                        f"for messages newer than sync_since={sync_since:.1f}"
+                    )
+                    
                     # Find next unsynced message for this client
                     unsynced = self.db.get_unsynced_messages(
                         room_hash=f"0x{self.room_hash:02X}",
@@ -565,6 +589,10 @@ class RoomServer:
                     
                     if unsynced:
                         post = unsynced[0]
+                        logger.debug(
+                            f"Room '{self.room_name}': Client 0x{client.id.get_public_key()[0]:02X} "
+                            f"has unsynced message #{post['id']}, post_timestamp={post['post_timestamp']:.1f}"
+                        )
                         # Check if enough time has passed since post creation
                         now = time.time()
                         if now >= post['post_timestamp'] + POST_SYNC_DELAY_SECS:
