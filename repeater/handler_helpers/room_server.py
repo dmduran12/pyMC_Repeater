@@ -207,6 +207,15 @@ class RoomServer:
                     f"{client_pubkey[:4].hex()}: {message_text[:50]}"
                 )
                 
+                # Update client activity timestamp (they're clearly active if posting)
+                # This prevents them from being evicted while they're actively posting
+                self.db.upsert_client_sync(
+                    room_hash=f"0x{self.room_hash:02X}",
+                    client_pubkey=client_pubkey.hex(),
+                    sync_since=0,  # Will be preserved if already set
+                    last_activity=time.time()
+                )
+                
                 # Trigger push notification
                 self.next_push_time = time.time() + (PUSH_NOTIFY_DELAY_MS / 1000.0)
                 
@@ -492,78 +501,89 @@ class RoomServer:
                 # Check for ACK timeouts first
                 await self._check_ack_timeouts()
                 
-                # Round-robin: get next client
-                if self.next_client_idx >= len(all_clients):
-                    self.next_client_idx = 0
+                # Track how many clients we've checked in this iteration
+                clients_checked = 0
+                max_checks = len(all_clients)
                 
-                client = all_clients[self.next_client_idx]
-                self.next_client_idx = (self.next_client_idx + 1) % len(all_clients)
-                
-                # Get client sync state
-                sync_state = self.db.get_client_sync(
-                    room_hash=f"0x{self.room_hash:02X}",
-                    client_pubkey=client.id.get_public_key().hex()
-                )
-                
-                # Skip if already waiting for ACK, evicted, or max failures
-                if sync_state:
-                    pending_ack = sync_state.get('pending_ack_crc', 0)
-                    last_activity = sync_state.get('last_activity', 0)
-                    push_failures = sync_state.get('push_failures', 0)
+                # Round-robin: find next active client
+                while clients_checked < max_checks:
+                    # Get next client
+                    if self.next_client_idx >= len(all_clients):
+                        self.next_client_idx = 0
                     
-                    if pending_ack != 0:
-                        logger.debug(f"Skipping client 0x{client.id.get_public_key()[0]:02X} (waiting for ACK)")
-                        self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 8000.0)
-                        continue
+                    client = all_clients[self.next_client_idx]
+                    self.next_client_idx = (self.next_client_idx + 1) % len(all_clients)
+                    clients_checked += 1
                     
-                    if last_activity == 0:
-                        logger.debug(f"Skipping client 0x{client.id.get_public_key()[0]:02X} (evicted)")
-                        self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 1000.0)
-                        continue
-                    
-                    if push_failures >= 3:
-                        logger.debug(f"Skipping client 0x{client.id.get_public_key()[0]:02X} (max failures)")
-                        self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 1000.0)
-                        continue
-                    
-                    sync_since = sync_state.get('sync_since', 0)
-                else:
-                    # Initialize sync state for new client
-                    # Use sync_since from ACL client (sent during login) if available
-                    sync_since = client.sync_since if hasattr(client, 'sync_since') else 0
-                    logger.info(
-                        f"Room '{self.room_name}': Initializing client "
-                        f"0x{client.id.get_public_key()[0]:02X} with sync_since={sync_since}"
+                    # Get client sync state
+                    sync_state = self.db.get_client_sync(
+                        room_hash=f"0x{self.room_hash:02X}",
+                        client_pubkey=client.id.get_public_key().hex()
                     )
-                    self.db.upsert_client_sync(
+                    
+                    # Skip if already waiting for ACK, evicted, or max failures
+                    if sync_state:
+                        pending_ack = sync_state.get('pending_ack_crc', 0)
+                        last_activity = sync_state.get('last_activity', 0)
+                        push_failures = sync_state.get('push_failures', 0)
+                        
+                        if pending_ack != 0:
+                            logger.debug(f"Skipping client 0x{client.id.get_public_key()[0]:02X} (waiting for ACK)")
+                            continue
+                        
+                        if last_activity == 0:
+                            logger.debug(f"Skipping client 0x{client.id.get_public_key()[0]:02X} (evicted)")
+                            continue
+                        
+                        if push_failures >= 3:
+                            logger.debug(f"Skipping client 0x{client.id.get_public_key()[0]:02X} (max failures)")
+                            continue
+                        
+                        sync_since = sync_state.get('sync_since', 0)
+                    else:
+                        # Initialize sync state for new client
+                        # Use sync_since from ACL client (sent during login) if available
+                        sync_since = client.sync_since if hasattr(client, 'sync_since') else 0
+                        logger.info(
+                            f"Room '{self.room_name}': Initializing client "
+                            f"0x{client.id.get_public_key()[0]:02X} with sync_since={sync_since}"
+                        )
+                        self.db.upsert_client_sync(
+                            room_hash=f"0x{self.room_hash:02X}",
+                            client_pubkey=client.id.get_public_key().hex(),
+                            sync_since=sync_since,
+                            last_activity=time.time()
+                        )
+                    
+                    # Find next unsynced message for this client
+                    unsynced = self.db.get_unsynced_messages(
                         room_hash=f"0x{self.room_hash:02X}",
                         client_pubkey=client.id.get_public_key().hex(),
                         sync_since=sync_since,
-                        last_activity=time.time()
+                        limit=1
                     )
-                
-                # Find next unsynced message for this client
-                unsynced = self.db.get_unsynced_messages(
-                    room_hash=f"0x{self.room_hash:02X}",
-                    client_pubkey=client.id.get_public_key().hex(),
-                    sync_since=sync_since,
-                    limit=1
-                )
-                
-                if unsynced:
-                    post = unsynced[0]
-                    # Check if enough time has passed since post creation
-                    now = time.time()
-                    if now >= post['post_timestamp'] + POST_SYNC_DELAY_SECS:
-                        # Push this post
-                        await self.push_post_to_client(client, post)
-                        self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 1000.0)
+                    
+                    if unsynced:
+                        post = unsynced[0]
+                        # Check if enough time has passed since post creation
+                        now = time.time()
+                        if now >= post['post_timestamp'] + POST_SYNC_DELAY_SECS:
+                            # Push this post
+                            await self.push_post_to_client(client, post)
+                            self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 1000.0)
+                            break  # Exit the while loop
+                        else:
+                            # Not ready yet, check sooner
+                            self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 8000.0)
+                            break  # Exit the while loop
                     else:
-                        # Not ready yet, check sooner
-                        self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 8000.0)
-                else:
-                    # No unsynced posts, check next client sooner
-                    self.next_push_time = time.time() + (SYNC_PUSH_INTERVAL_MS / 8000.0)
+                        # No unsynced posts for this client, try next client
+                        continue
+                
+                # If we checked all clients and none were active/ready
+                if clients_checked >= max_checks:
+                    # All clients skipped or no messages - wait longer before next check
+                    self.next_push_time = time.time() + 5.0  # Wait 5 seconds
                 
                 # SAFETY: Reset error counter on successful iteration
                 self.consecutive_sync_errors = 0
