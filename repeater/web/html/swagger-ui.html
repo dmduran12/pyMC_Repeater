@@ -187,20 +187,17 @@
                 showCommonExtensions: true,
                 tagsSorter: "alpha",
                 operationsSorter: "alpha",
-                // Override servers after spec loads
-                onComplete: function() {
-                    // Update the servers in the loaded spec
-                    ui.specActions.updateSpec(
-                        JSON.stringify({
-                            ...ui.specSelectors.specJson().toJS(),
-                            servers: [
-                                {
-                                    url: currentUrl,
-                                    description: "Current host (" + window.location.host + ")"
-                                }
-                            ]
-                        })
-                    );
+                // Intercept requests to use current host
+                requestInterceptor: function(request) {
+                    // Only modify API requests, not the openapi spec fetch
+                    if (!request.url.includes('/api/openapi')) {
+                        // Replace any localhost or hardcoded host with current host
+                        const url = new URL(request.url);
+                        url.protocol = window.location.protocol;
+                        url.host = window.location.host;
+                        request.url = url.toString();
+                    }
+                    return request;
                 }
             });
             

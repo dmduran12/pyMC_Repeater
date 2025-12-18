@@ -209,10 +209,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
 
-  /packet_history:
+  /recent_packets:
     get:
       tags: [Packets]
-      summary: Get packet history
+      summary: Get recent packets
       description: Retrieve recent packet history
       parameters:
         - name: limit
@@ -225,7 +225,7 @@ paths:
           description: Maximum number of packets to return
       responses:
         '200':
-          description: Packet history
+          description: Recent packets
           content:
             application/json:
               schema:
@@ -257,25 +257,11 @@ paths:
     get:
       tags: [Charts]
       summary: Get RRD time-series data
-      description: Retrieve Round-Robin Database metrics for graphing
-      parameters:
-        - name: start_time
-          in: query
-          schema:
-            type: integer
-          description: Start timestamp (Unix epoch)
-        - name: end_time
-          in: query
-          schema:
-            type: integer
-          description: End timestamp (Unix epoch)
-        - name: resolution
-          in: query
-          schema:
-            type: string
-            enum: [average, max, min]
-            default: average
-          description: Data resolution/aggregation method
+      description: |
+        Retrieve Round-Robin Database metrics for graphing.
+        
+        **Note:** This endpoint extracts parameters from the request internally.
+        Parameters are handled automatically by the backend.
       responses:
         '200':
           description: RRD time-series data
@@ -648,25 +634,19 @@ paths:
   /acl_info:
     get:
       tags: [ACL]
-      summary: Get ACL information
-      description: Get access control list information for identities
-      parameters:
-        - name: identity_hash
-          in: query
-          schema:
-            type: string
-            pattern: '^0x[0-9a-fA-F]{2}$'
-          description: Identity hash
-          example: "0x42"
-        - name: identity_name
-          in: query
-          schema:
-            type: string
-          description: Identity name
-          example: "General"
+      summary: Get ACL information for all identities
+      description: |
+        Get ACL configuration and statistics for all registered identities.
+        
+        Returns information including:
+        - Identity name, type, and hash
+        - Max clients allowed
+        - Number of authenticated clients
+        - Password configuration status
+        - Read-only access setting
       responses:
         '200':
-          description: ACL information
+          description: ACL information for all identities
           content:
             application/json:
               schema:
@@ -676,6 +656,44 @@ paths:
                     type: boolean
                   data:
                     type: object
+                    properties:
+                      acls:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                              example: "repeater"
+                            type:
+                              type: string
+                              enum: [repeater, room_server]
+                              example: "repeater"
+                            hash:
+                              type: string
+                              pattern: '^0x[0-9a-fA-F]{2}$'
+                              example: "0x42"
+                            max_clients:
+                              type: integer
+                              example: 100
+                            authenticated_clients:
+                              type: integer
+                              example: 5
+                            has_admin_password:
+                              type: boolean
+                              example: true
+                            has_guest_password:
+                              type: boolean
+                              example: true
+                            allow_read_only:
+                              type: boolean
+                              example: true
+                      total_identities:
+                        type: integer
+                        example: 3
+                      total_authenticated_clients:
+                        type: integer
+                        example: 15
 
   /acl_clients:
     get:
