@@ -39,12 +39,6 @@ dependencies = [
     "psutil>=5.9.0",
 ]
 
-
-
-<<<<<<< HEAD
-=======
-
->>>>>>> 291b5ffd9f63e945273cd65477b26e1405c19b1c
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
