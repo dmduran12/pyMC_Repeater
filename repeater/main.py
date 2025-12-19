@@ -5,7 +5,9 @@ import sys
 
 from repeater.config import get_radio_for_board, load_config
 from repeater.engine import RepeaterHandler
-from repeater.http_server import HTTPStatsServer, _log_buffer
+from repeater.web.http_server import HTTPStatsServer, _log_buffer
+from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper
+from repeater.packet_router import PacketRouter
 
 logger = logging.getLogger("RepeaterDaemon")
 
@@ -21,15 +23,18 @@ class RepeaterDaemon:
         self.local_hash = None
         self.local_identity = None
         self.http_server = None
+        self.trace_helper = None
+        self.advert_helper = None
+        self.discovery_helper = None
+        self.router = None
 
-        # Setup logging
+
         log_level = config.get("logging", {}).get("level", "INFO")
         logging.basicConfig(
             level=getattr(logging, log_level),
             format=config.get("logging", {}).get("format"),
         )
 
-        # Add log buffer handler to capture logs for web display
         root_logger = logging.getLogger()
         _log_buffer.setLevel(getattr(logging, log_level))
         root_logger.addHandler(_log_buffer)
@@ -42,12 +47,36 @@ class RepeaterDaemon:
             logger.info("Initializing radio hardware...")
             try:
                 self.radio = get_radio_for_board(self.config)
+                
+                if hasattr(self.radio, 'set_custom_cad_thresholds'):
+                    # Load CAD settings from config, with defaults
+                    cad_config = self.config.get("radio", {}).get("cad", {})
+                    peak_threshold = cad_config.get("peak_threshold", 23)
+                    min_threshold = cad_config.get("min_threshold", 11)
+                    
+                    self.radio.set_custom_cad_thresholds(peak=peak_threshold, min_val=min_threshold)
+                    logger.info(f"CAD thresholds set from config: peak={peak_threshold}, min={min_threshold}")
+                else:
+                    logger.warning("Radio does not support CAD configuration")
+                
+
+                if hasattr(self.radio, 'get_frequency'):
+                    logger.info(f"Radio config - Freq: {self.radio.get_frequency():.1f}MHz")
+                if hasattr(self.radio, 'get_spreading_factor'):
+                    logger.info(f"Radio config - SF: {self.radio.get_spreading_factor()}")
+                if hasattr(self.radio, 'get_bandwidth'):
+                    logger.info(f"Radio config - BW: {self.radio.get_bandwidth()}kHz")
+                if hasattr(self.radio, 'get_coding_rate'):
+                    logger.info(f"Radio config - CR: {self.radio.get_coding_rate()}")
+                if hasattr(self.radio, 'get_tx_power'):
+                    logger.info(f"Radio config - TX Power: {self.radio.get_tx_power()}dBm")
+                
                 logger.info("Radio hardware initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize radio hardware: {e}")
                 raise RuntimeError("Repeater requires real LoRa hardware") from e
 
-        # Create dispatcher from pymc_core
+
         try:
             from pymc_core import LocalIdentity
             from pymc_core.node.dispatcher import Dispatcher
@@ -64,65 +93,75 @@ class RepeaterDaemon:
             self.local_identity = local_identity
             self.dispatcher.local_identity = local_identity
 
-            # Get the actual hash from the identity (first byte of public key)
             pubkey = local_identity.get_public_key()
             self.local_hash = pubkey[0]
             logger.info(f"Local identity set: {local_identity.get_address_bytes().hex()}")
             local_hash_hex = f"0x{self.local_hash: 02x}"
             logger.info(f"Local node hash (from identity): {local_hash_hex}")
 
-            # Override _is_own_packet to always return False
+
             self.dispatcher._is_own_packet = lambda pkt: False
 
             self.repeater_handler = RepeaterHandler(
                 self.config, self.dispatcher, self.local_hash, send_advert_func=self.send_advert
             )
 
-            self.dispatcher.register_fallback_handler(self._repeater_callback)
-            logger.info("Repeater handler registered (forwarder mode)")
+            # Create router
+            self.router = PacketRouter(self)
+            await self.router.start()
+            
+            # Register router as entry point for ALL packets via fallback handler
+            # All received packets flow through router → helpers → repeater engine
+            self.dispatcher.register_fallback_handler(self._router_callback)
+            logger.info("Packet router registered as fallback (catches all packets)")
+
+            # Create processing helpers (handlers created internally)
+            self.trace_helper = TraceHelper(
+                local_hash=self.local_hash,
+                repeater_handler=self.repeater_handler,
+                packet_injector=self.router.inject_packet,
+                log_fn=logger.info,
+            )
+            logger.info("Trace processing helper initialized")
+            
+            # Create advert helper for neighbor tracking
+            self.advert_helper = AdvertHelper(
+                local_identity=self.local_identity,
+                storage=self.repeater_handler.storage if self.repeater_handler else None,
+                log_fn=logger.info,
+            )
+            logger.info("Advert processing helper initialized")
+
+            # Set up discovery handler if enabled
+            allow_discovery = self.config.get("repeater", {}).get("allow_discovery", True)
+            if allow_discovery:
+                self.discovery_helper = DiscoveryHelper(
+                    local_identity=self.local_identity,
+                    packet_injector=self.router.inject_packet,
+                    node_type=2,
+                    log_fn=logger.info,
+                )
+                logger.info("Discovery processing helper initialized")
+            else:
+                logger.info("Discovery response handler disabled")
 
         except Exception as e:
             logger.error(f"Failed to initialize dispatcher: {e}")
             raise
 
-    async def _repeater_callback(self, packet):
-
-        if self.repeater_handler:
-
-            metadata = {
-                "rssi": getattr(packet, "rssi", 0),
-                "snr": getattr(packet, "snr", 0.0),
-                "timestamp": getattr(packet, "timestamp", 0),
-            }
-            await self.repeater_handler(packet, metadata)
-
-    def _get_keypair(self):
-        """Create a PyNaCl SigningKey for map API."""
-        try:
-            from nacl.signing import SigningKey
-
-            if not self.local_identity:
-                return None
-
-            # Get the seed from config
-            identity_key = self.config.get("mesh", {}).get("identity_key")
-            if not identity_key:
-                return None
-
-            # Convert to bytes if it's a hex string, otherwise use as-is
-            if isinstance(identity_key, str):
-                seed_bytes = bytes.fromhex(identity_key)
-            else:
-                seed_bytes = identity_key
-
-            signing_key = SigningKey(seed_bytes)
-            return signing_key
-        except Exception as e:
-            logger.warning(f"Failed to create keypair for map API: {e}")
-            return None
-
+    async def _router_callback(self, packet):
+        """
+        Single entry point for ALL packets.
+        Enqueues packets for router processing.
+        """
+        if self.router:
+            try:
+                await self.router.enqueue(packet)
+            except Exception as e:
+                logger.error(f"Error enqueuing packet in router: {e}", exc_info=True)
     def get_stats(self) -> dict:
-
+        stats = {}
+        
         if self.repeater_handler:
             stats = self.repeater_handler.get_stats()
             # Add public key if available
@@ -132,8 +171,8 @@ class RepeaterDaemon:
                     stats["public_key"] = pubkey.hex()
                 except Exception:
                     stats["public_key"] = None
-            return stats
-        return {}
+        
+        return stats
 
     async def send_advert(self) -> bool:
 
@@ -165,7 +204,7 @@ class RepeaterDaemon:
             )
 
             # Send via dispatcher
-            await self.dispatcher.send_packet(packet)
+            await self.dispatcher.send_packet(packet, wait_for_ack=False)
 
             # Mark our own advert as seen to prevent re-forwarding it
             if self.repeater_handler:
@@ -189,7 +228,6 @@ class RepeaterDaemon:
         http_port = self.config.get("http", {}).get("port", 8000)
         http_host = self.config.get("http", {}).get("host", "0.0.0.0")
 
-        template_dir = os.path.join(os.path.dirname(__file__), "templates")
         node_name = self.config.get("repeater", {}).get("node_name", "Repeater")
 
         # Format public key for display
@@ -202,19 +240,19 @@ class RepeaterDaemon:
             else:
                 pub_key_formatted = pub_key_hex
 
-        # Get the current event loop (the main loop where the radio was initialized)
         current_loop = asyncio.get_event_loop()
 
         self.http_server = HTTPStatsServer(
             host=http_host,
             port=http_port,
             stats_getter=self.get_stats,
-            template_dir=template_dir,
             node_name=node_name,
             pub_key=pub_key_formatted,
             send_advert_func=self.send_advert,
-            config=self.config,  # Pass the config reference
-            event_loop=current_loop,  # Pass the main event loop
+            config=self.config, 
+            event_loop=current_loop, 
+            daemon_instance=self,  
+            config_path=getattr(self, 'config_path', '/etc/pymc_repeater/config.yaml'),
         )
 
         try:
@@ -227,6 +265,8 @@ class RepeaterDaemon:
             await self.dispatcher.run_forever()
         except KeyboardInterrupt:
             logger.info("Shutting down...")
+            if self.router:
+                await self.router.stop()
             if self.http_server:
                 self.http_server.stop()
 
@@ -250,12 +290,17 @@ def main():
 
     # Load configuration
     config = load_config(args.config)
+    config_path = args.config if args.config else '/etc/pymc_repeater/config.yaml'
 
     if args.log_level:
+        if "logging" not in config:
+            config["logging"] = {}
         config["logging"]["level"] = args.log_level
+
 
     # Don't initialize radio here - it will be done inside the async event loop
     daemon = RepeaterDaemon(config, radio=None)
+    daemon.config_path = config_path
 
     # Run
     try:

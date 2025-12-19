@@ -58,8 +58,14 @@ Frequency Labs meshadv-mini
     SPI Bus: SPI0
     GPIO Pins: CS=8, Reset=24, Busy=20, IRQ=16
 
+Frequency Labs meshadv
 
-
+    Hardware: FrequencyLabs meshadv-mini Hat
+    Platform: Raspberry Pi (or compatible single-board computer)
+    Frequency: 868MHz (EU) or 915MHz (US)
+    TX Power: Up to 22dBm
+    SPI Bus: SPI0
+    GPIO Pins: CS=21, Reset=18, Busy=20, IRQ=16, TXEN=13, RXEN=12, use_dio3_tcxo=True
 ...
 
 ## Screenshots
@@ -74,6 +80,33 @@ Frequency Labs meshadv-mini
 
 ## Installation
 
+Before You Begin
+
+Make sure SPI is switched on using raspi-config:
+
+```bash 
+sudo raspi-config
+```
+
+1. Go to Interface Options
+2. Select SPI
+3. Choose Enable
+4. Reboot when prompted:
+
+```bash
+sudo reboot
+```
+
+After reboot, you can confirm SPI is active:
+```bash 
+ls /dev/spi*
+```
+
+You should see something like:
+```bash 
+/dev/spidev0.0  /dev/spidev0.1
+```
+
 **Clone the Repository:**
 ```bash
 git clone https://github.com/rightup/pyMC_Repeater.git
@@ -82,7 +115,7 @@ cd pyMC_Repeater
 
 **Quick Install:**
 ```bash
-sudo bash deploy.sh
+sudo bash manage.sh
 ```
 
 This script will:
@@ -116,15 +149,36 @@ The configuration file is created and configured during installation at:
 
 To reconfigure radio and hardware settings after installation, run:
 ```bash
-sudo bash setup-radio-config.sh /etc/pymc_repeater
+sudo bash setup-radio-config.sh /etc/pymc_repeater or sudo bash manage.sh
 sudo systemctl restart pymc-repeater
+
 ```
+## Upgrading
+
+To upgrade an existing installation to the latest version:
+
+```bash
+# Navigate to your pyMC_Repeater directory
+cd pyMC_Repeater
+
+# Run the upgrade script
+sudo bash manage.sh
+```
+
+The upgrade script will:
+- Pull the latest code from the main branch
+- Update all application files
+- Upgrade Python dependencies if needed
+- Restart the service automatically
+- Preserve your existing configuration
+
+
 
 
 ## Uninstallation
 
 ```bash
-sudo bash uninstall.sh
+sudo bash manage.sh
 ```
 
 This script will:
@@ -196,3 +250,7 @@ Pre-commit hooks will automatically:
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+
+
+
