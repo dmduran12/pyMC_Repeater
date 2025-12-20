@@ -140,23 +140,12 @@ class MeshCLI:
             return "Error: Advert functionality not configured"
         
         try:
-            # Call the async callback synchronously (will be awaited by caller if needed)
             import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Schedule the coroutine and don't wait for it
-                asyncio.create_task(self.send_advert_callback())
-                logger.info("Advert send scheduled")
-                return "OK - Advert sent"
-            else:
-                # Run synchronously if no loop
-                result = loop.run_until_complete(self.send_advert_callback())
-                if result:
-                    return "OK - Advert sent"
-                else:
-                    return "Error: Failed to send advert"
+            asyncio.create_task(self.send_advert_callback())
+            logger.info("Advert scheduled for sending")
+            return "OK - Advert sent"
         except Exception as e:
-            logger.error(f"Failed to send advert: {e}", exc_info=True)
+            logger.error(f"Failed to schedule advert: {e}", exc_info=True)
             return f"Error: {e}"
     
     def _cmd_clock(self, command: str) -> str:
