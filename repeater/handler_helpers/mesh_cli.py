@@ -541,14 +541,14 @@ class MeshCLI:
             lines = []
             for pubkey, info in filtered_neighbors.items():
                 last_seen = info.get('last_seen', 0)
-                seconds_ago = current_time - last_seen
+                seconds_ago = int(current_time - last_seen)
                 
                 # Get first 4 bytes of pubkey as hex (match C++ format)
                 pubkey_short = pubkey[:8] if len(pubkey) >= 8 else pubkey
-                snr = info.get('snr', 0)
+                snr = info.get('snr', 0) or 0
                 
                 # Format: <4byte_hex>:<seconds_ago>:<snr> (matches C++ format)
-                lines.append(f"{pubkey_short}:{seconds_ago}:{snr}")
+                lines.append(f"{pubkey_short}:{seconds_ago}:{int(snr)}")
             
             return "\n".join(lines)
             
