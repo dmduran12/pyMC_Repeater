@@ -145,8 +145,14 @@ class MeshCLI:
         
         try:
             import asyncio
-            asyncio.create_task(self.send_advert_callback())
-            logger.info("Advert scheduled for sending")
+            
+            async def delayed_advert():
+                """Delay advert to let CLI response send first (matches C++ 1500ms delay)."""
+                await asyncio.sleep(1.5)
+                await self.send_advert_callback()
+            
+            asyncio.create_task(delayed_advert())
+            logger.info("Advert scheduled for sending (1.5s delay)")
             return "OK - Advert sent"
         except Exception as e:
             logger.error(f"Failed to schedule advert: {e}", exc_info=True)
@@ -537,21 +543,12 @@ class MeshCLI:
                 last_seen = info.get('last_seen', 0)
                 seconds_ago = current_time - last_seen
                 
-                # Get short pubkey (first 8 chars)
+                # Get first 4 bytes of pubkey as hex (match C++ format)
                 pubkey_short = pubkey[:8] if len(pubkey) >= 8 else pubkey
-                node_name = info.get('node_name') or 'Unknown'
+                snr = info.get('snr', 0)
                 
-                # Format time ago
-                if seconds_ago < 60:
-                    time_str = f"{seconds_ago}s ago"
-                elif seconds_ago < 3600:
-                    time_str = f"{seconds_ago // 60}m ago"
-                elif seconds_ago < 86400:
-                    time_str = f"{seconds_ago // 3600}h ago"
-                else:
-                    time_str = f"{seconds_ago // 86400}d ago"
-                
-                lines.append(f"<{pubkey_short}> {node_name} heard {time_str}")
+                # Format: <4byte_hex>:<seconds_ago>:<snr> (matches C++ format)
+                lines.append(f"{pubkey_short}:{seconds_ago}:{snr}")
             
             return "\n".join(lines)
             
