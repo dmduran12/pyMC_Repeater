@@ -196,6 +196,7 @@ class RepeaterDaemon:
                 config=self.config,  # For CLI to read/modify settings
                 save_config_callback=lambda: self._save_config(getattr(self, 'config_path', '/tmp/config.yaml')),  # For CLI to persist changes
                 sqlite_handler=self.repeater_handler.storage.sqlite_handler if self.repeater_handler and self.repeater_handler.storage else None,  # For room server database
+                send_advert_callback=self.send_advert,  # For CLI advert command
             )
             
             # Register default repeater identity for text messages

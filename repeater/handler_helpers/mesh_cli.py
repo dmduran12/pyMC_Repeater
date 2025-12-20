@@ -1,9 +1,3 @@
-"""
-Mesh CLI Handler
-Handles administrative commands sent to repeaters and room servers via TXT_MSG packets.
-Only users with admin permissions (via ACL) can execute these commands.
-"""
-
 import logging
 from typing import Optional, Dict, Any, Callable
 import yaml
@@ -14,11 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 class MeshCLI:
-    """
-    CLI command handler for mesh node administration (repeaters and room servers).
-    Commands follow the format: XX|command params
-    where XX is an optional sequence number that gets echoed in the reply.
-    """
 
     def __init__(
         self, 
@@ -26,39 +15,22 @@ class MeshCLI:
         config: Dict[str, Any], 
         save_config_callback: Callable,
         identity_type: str = "repeater",
-        enable_regions: bool = True
+        enable_regions: bool = True,
+        send_advert_callback: Optional[Callable] = None
     ):
-        """
-        Initialize the CLI handler.
-        
-        Args:
-            config_path: Path to the config.yaml file
-            config: Current configuration dictionary
-            save_config_callback: Callback to save config changes
-            identity_type: Type of identity ('repeater' or 'room_server')
-            enable_regions: Whether to enable region commands (only for repeaters)
-        """
+
         self.config_path = Path(config_path)
         self.config = config
         self.save_config = save_config_callback
         self.identity_type = identity_type
         self.enable_regions = enable_regions
+        self.send_advert_callback = send_advert_callback
         
         # Get repeater config shortcut
         self.repeater_config = config.get('repeater', {})
         
     def handle_command(self, sender_pubkey: bytes, command: str, is_admin: bool) -> str:
-        """
-        Handle an incoming command from a client.
-        
-        Args:
-            sender_pubkey: Public key of sender
-            command: Command string (may include XX| prefix)
-            is_admin: Whether sender has admin permissions
-            
-        Returns:
-            Reply string to send back to sender
-        """
+
         # Check admin permission first
         if not is_admin:
             return "Error: Admin permission required"
@@ -85,7 +57,6 @@ class MeshCLI:
         return reply
     
     def _route_command(self, command: str) -> str:
-        """Route command to appropriate handler method."""
         
         # System commands
         if command == "reboot":
@@ -164,9 +135,29 @@ class MeshCLI:
     
     def _cmd_advert(self) -> str:
         """Send self advertisement."""
-        logger.info("Advert command received")
-        # TODO: Trigger advertisement through packet handler
-        return "Error: Not yet implemented"
+        if not self.send_advert_callback:
+            logger.warning("Advert command received but no callback configured")
+            return "Error: Advert functionality not configured"
+        
+        try:
+            # Call the async callback synchronously (will be awaited by caller if needed)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Schedule the coroutine and don't wait for it
+                asyncio.create_task(self.send_advert_callback())
+                logger.info("Advert send scheduled")
+                return "OK - Advert sent"
+            else:
+                # Run synchronously if no loop
+                result = loop.run_until_complete(self.send_advert_callback())
+                if result:
+                    return "OK - Advert sent"
+                else:
+                    return "Error: Failed to send advert"
+        except Exception as e:
+            logger.error(f"Failed to send advert: {e}", exc_info=True)
+            return f"Error: {e}"
     
     def _cmd_clock(self, command: str) -> str:
         """Handle clock commands."""
@@ -585,7 +576,3 @@ class MeshCLI:
             return "Error: Use journalctl to view logs"
         else:
             return "Unknown log command"
-
-
-# Backward compatibility alias
-RepeaterCLI = MeshCLI

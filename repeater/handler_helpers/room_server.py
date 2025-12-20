@@ -79,7 +79,11 @@ class RoomServer:
         sqlite_handler,
         packet_injector,
         acl,
-        max_posts: int = 32
+        max_posts: int = 32,
+        config_path: str = None,
+        config: dict = None,
+        save_config_callback = None,
+        send_advert_callback = None
     ):
  
         self.room_hash = room_hash
@@ -88,6 +92,67 @@ class RoomServer:
         self.db = sqlite_handler
         self.packet_injector = packet_injector
         self.acl = acl
+        
+        # Create send_advert callback for this room server
+        async def send_room_advert():
+            """Send advertisement for this specific room server."""
+            if not packet_injector or not local_identity:
+                logger.error(f"Room '{room_name}': Cannot send advert - missing injector or identity")
+                return False
+            
+            try:
+                from pymc_core.protocol import PacketBuilder
+                from pymc_core.protocol.constants import ADVERT_FLAG_HAS_NAME, ADVERT_FLAG_IS_ROOM_SERVER
+                
+                # Get room config
+                room_config = config.get('identities', {}).get('room_servers', [])
+                room_settings = {}
+                for rs in room_config:
+                    if rs.get('name') == room_name:
+                        room_settings = rs.get('settings', {})
+                        break
+                
+                # Use room-specific name and location
+                node_name = room_settings.get('room_name', room_name)
+                latitude = room_settings.get('latitude', 0.0)
+                longitude = room_settings.get('longitude', 0.0)
+                
+                flags = ADVERT_FLAG_IS_ROOM_SERVER | ADVERT_FLAG_HAS_NAME
+                
+                packet = PacketBuilder.create_advert(
+                    local_identity=local_identity,
+                    name=node_name,
+                    lat=latitude,
+                    lon=longitude,
+                    feature1=0,
+                    feature2=0,
+                    flags=flags,
+                    route_type="flood",
+                )
+                
+                # Send via packet injector
+                await packet_injector(packet, wait_for_ack=False)
+                
+                logger.info(f"Room '{room_name}': Sent flood advert '{node_name}' at ({latitude:.6f}, {longitude:.6f})")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Room '{room_name}': Failed to send advert: {e}", exc_info=True)
+                return False
+        
+        # Initialize CLI handler for room server commands
+        self.cli = None
+        if config_path and config and save_config_callback:
+            from .mesh_cli import MeshCLI
+            self.cli = MeshCLI(
+                config_path,
+                config,
+                save_config_callback,
+                identity_type="room_server",
+                enable_regions=False,  # Room servers don't support region commands
+                send_advert_callback=send_room_advert
+            )
+            logger.info(f"Room '{room_name}': Initialized CLI handler")
         
         # Enforce hard limit (match C++ MAX_UNSYNCED_POSTS)
         if max_posts > MAX_UNSYNCED_POSTS:

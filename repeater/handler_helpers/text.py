@@ -11,7 +11,7 @@ import logging
 import struct
 
 from pymc_core.node.handlers.text import TextMessageHandler
-from .repeater_cli import RepeaterCLI
+from .mesh_cli import MeshCLI
 from .room_server import RoomServer
 
 logger = logging.getLogger("TextHelper")
@@ -21,13 +21,14 @@ class TextHelper:
 
     def __init__(self, identity_manager, packet_injector=None, acl_dict=None, log_fn=None, 
                  config_path: str = None, config: dict = None, save_config_callback=None,
-                 sqlite_handler=None):
+                 sqlite_handler=None, send_advert_callback=None):
 
         self.identity_manager = identity_manager
         self.packet_injector = packet_injector
         self.log_fn = log_fn or logger.info
         self.acl_dict = acl_dict or {}  # Per-identity ACLs keyed by hash_byte
         self.sqlite_handler = sqlite_handler  # For room server database operations
+        self.send_advert_callback = send_advert_callback  # Callback to send repeater advert
         
         # Dictionary of handlers keyed by dest_hash
         self.handlers = {}
@@ -38,10 +39,22 @@ class TextHelper:
         # Track repeater identity for CLI commands
         self.repeater_hash = None
         
+        # Store config for later use
+        self.config_path = config_path
+        self.config = config
+        self.save_config_callback = save_config_callback
+        
         # Initialize CLI handler if config provided
         self.cli = None
         if config_path and config and save_config_callback:
-            self.cli = RepeaterCLI(config_path, config, save_config_callback)
+            self.cli = MeshCLI(
+                config_path, 
+                config, 
+                save_config_callback,
+                identity_type="repeater",
+                enable_regions=True,
+                send_advert_callback=send_advert_callback
+            )
             logger.info("Initialized CLI handler for repeater commands")
 
     def register_identity(
@@ -109,7 +122,10 @@ class TextHelper:
                     sqlite_handler=self.sqlite_handler,
                     packet_injector=self.packet_injector,
                     acl=identity_acl,
-                    max_posts=max_posts
+                    max_posts=max_posts,
+                    config_path=self.config_path,
+                    config=self.config,
+                    save_config_callback=self.save_config_callback
                 )
                 
                 self.room_servers[hash_byte] = room_server
@@ -252,14 +268,52 @@ class TextHelper:
                 except Exception as e:
                     logger.error(f"Failed to store room message: {e}", exc_info=True)
                 
-                # Room messages don't need further processing
+                # Check if this is a CLI command to the room server
+                if self._is_cli_command(message_text):
+                    room_server = self.room_servers.get(dest_hash)
+                    if room_server and room_server.cli:
+                        try:
+                            # Check admin permission
+                            is_admin = self._check_admin_permission_for_identity(src_hash, dest_hash)
+                            
+                            if not is_admin:
+                                logger.warning(f"Room '{identity_name}': CLI command denied from 0x{src_hash:02X} (not admin)")
+                                return
+                            
+                            # Get sender's full pubkey
+                            identity_acl = self.acl_dict.get(dest_hash)
+                            sender_pubkey = bytes([src_hash]) + b'\x00' * 31  # Default
+                            if identity_acl:
+                                for client_info in identity_acl.get_all_clients():
+                                    if client_info.id.get_public_key()[0] == src_hash:
+                                        sender_pubkey = client_info.id.get_public_key()
+                                        break
+                            
+                            # Handle CLI command
+                            reply = room_server.cli.handle_command(
+                                sender_pubkey=sender_pubkey,
+                                command=message_text,
+                                is_admin=is_admin
+                            )
+                            
+                            logger.info(f"Room '{identity_name}': CLI command from 0x{src_hash:02X}: {message_text[:50]} -> {reply[:100]}")
+                            
+                            # Send reply back to sender
+                            handler_info = self.handlers.get(dest_hash)
+                            if handler_info:
+                                await self._send_cli_reply(packet, reply, handler_info)
+                            
+                        except Exception as e:
+                            logger.error(f"Error processing room server CLI command: {e}", exc_info=True)
+                
+                # Room messages (non-CLI) don't need further processing
                 return
             
             # Check if this is a CLI command to the repeater (AFTER decryption)
             if dest_hash == self.repeater_hash and self.cli and self._is_cli_command(message_text):
                 try:
                     # Check admin permission
-                    is_admin = self._check_admin_permission(src_hash)
+                    is_admin = self._check_admin_permission_for_identity(src_hash, self.repeater_hash)
                     
                     # If not admin, log and return without sending reply
                     if not is_admin:
@@ -347,14 +401,18 @@ class TextHelper:
         return any(message.startswith(prefix) for prefix in command_prefixes)
     
     def _check_admin_permission(self, src_hash: int) -> bool:
-        """Check if sender has admin permissions (bit 0x02)."""
-        # Get the repeater's ACL
-        repeater_acl = self.acl_dict.get(self.repeater_hash)
-        if not repeater_acl:
+        """Check if sender has admin permissions for repeater (legacy method)."""
+        return self._check_admin_permission_for_identity(src_hash, self.repeater_hash)
+    
+    def _check_admin_permission_for_identity(self, src_hash: int, identity_hash: int) -> bool:
+        """Check if sender has admin permissions (bit 0x02) for a specific identity."""
+        # Get the identity's ACL
+        identity_acl = self.acl_dict.get(identity_hash)
+        if not identity_acl:
             return False
         
         # Get client by hash byte
-        clients = repeater_acl.get_all_clients()
+        clients = identity_acl.get_all_clients()
         for client_info in clients:
             pubkey = client_info.id.get_public_key()
             if pubkey[0] == src_hash:
