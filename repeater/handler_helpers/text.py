@@ -9,12 +9,17 @@ Also handles CLI commands for admin users on the repeater identity.
 import asyncio
 import logging
 import struct
+import time
 
 from pymc_core.node.handlers.text import TextMessageHandler
 from .mesh_cli import MeshCLI
 from .room_server import RoomServer
 
 logger = logging.getLogger("TextHelper")
+
+# Text message type flags
+TXT_TYPE_PLAIN = 0x00
+TXT_TYPE_CLI_DATA = 0x01
 
 
 class TextHelper:
@@ -240,45 +245,13 @@ class TextHelper:
                 f"[{identity_type}:{identity_name}] Message: {message_text}"
             )
             
-            # Handle room server messages - store to database
+            # Handle room server messages
             if identity_type == "room_server" and dest_hash in self.room_servers:
-                try:
-                    room_server = self.room_servers[dest_hash]
-                    
-                    # Get sender's full public key from ACL
-                    identity_acl = self.acl_dict.get(dest_hash)
-                    sender_pubkey = bytes([src_hash]) + b'\x00' * 31  # Default
-                    if identity_acl:
-                        for client_info in identity_acl.get_all_clients():
-                            if client_info.id.get_public_key()[0] == src_hash:
-                                sender_pubkey = client_info.id.get_public_key()
-                                break
-                    
-                    # Extract timestamp and txt_type from decrypted data
-                    # Packet decryption already happened in TextMessageHandler
-                    # We need to extract from original payload if available
-                    sender_timestamp = int(packet.decrypted.get('timestamp', 0)) if hasattr(packet, 'decrypted') else 0
-                    txt_type = 0  # TXT_TYPE_PLAIN by default
-                    
-                    # Store message to room database
-                    # SECURITY: Radio messages cannot use server author key
-                    await room_server.add_post(
-                        client_pubkey=sender_pubkey,
-                        message_text=message_text,
-                        sender_timestamp=sender_timestamp,
-                        txt_type=txt_type,
-                        allow_server_author=False  # Block server key from radio
-                    )
-                    
-                    logger.info(
-                        f"Room '{identity_name}': Stored message from 0x{src_hash:02X}"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to store room message: {e}", exc_info=True)
+                room_server = self.room_servers[dest_hash]
                 
-                # Check if this is a CLI command to the room server
+                # Check if this is a CLI command FIRST (before storing as post)
                 if self._is_cli_command(message_text):
-                    room_server = self.room_servers.get(dest_hash)
+                    # Handle CLI command - do NOT store as post
                     if room_server and room_server.cli:
                         try:
                             # Check admin permission
@@ -313,8 +286,36 @@ class TextHelper:
                             
                         except Exception as e:
                             logger.error(f"Error processing room server CLI command: {e}", exc_info=True)
+                    
+                    # CLI command handled, don't store as post
+                    return
                 
-                # Room messages (non-CLI) don't need further processing
+                # NOT a CLI command - store as regular room post
+                try:
+                    # Get sender's full pubkey
+                    identity_acl = self.acl_dict.get(dest_hash)
+                    sender_pubkey = bytes([src_hash]) + b'\x00' * 31  # Default
+                    if identity_acl:
+                        for client_info in identity_acl.get_all_clients():
+                            if client_info.id.get_public_key()[0] == src_hash:
+                                sender_pubkey = client_info.id.get_public_key()
+                                break
+                    
+                    # Store message as post
+                    sender_timestamp = int(time.time())
+                    success = await room_server.add_post(
+                        client_pubkey=sender_pubkey,
+                        message_text=message_text,
+                        sender_timestamp=sender_timestamp,
+                        txt_type=TXT_TYPE_PLAIN
+                    )
+                    
+                    if success:
+                        logger.info(f"Room '{identity_name}': New post from {sender_pubkey[:4].hex()}: {message_text[:50]}")
+                    
+                except Exception as e:
+                    logger.error(f"Error storing room post: {e}", exc_info=True)
+                
                 return
             
             # Check if this is a CLI command to the repeater (AFTER decryption)
@@ -453,21 +454,22 @@ class TextHelper:
             incoming_route = original_packet.get_route_type()
             logger.debug(f"CLI reply: original packet dest=0x{dest_hash:02X}, src=0x{src_hash:02X}, incoming_route={incoming_route}")
             
-            # Find the client in repeater's ACL to get shared secret
-            repeater_acl = self.acl_dict.get(self.repeater_hash)
-            if not repeater_acl:
-                logger.error("No repeater ACL found for CLI reply")
+            # Find the client in the DESTINATION identity's ACL (not always repeater!)
+            # dest_hash is the identity that received the command (repeater OR room server)
+            identity_acl = self.acl_dict.get(dest_hash)
+            if not identity_acl:
+                logger.error(f"No ACL found for identity 0x{dest_hash:02X} for CLI reply")
                 return
             
             client = None
-            for client_info in repeater_acl.get_all_clients():
+            for client_info in identity_acl.get_all_clients():
                 pubkey = client_info.id.get_public_key()
                 if pubkey[0] == src_hash:
                     client = client_info
                     break
             
             if not client:
-                logger.error(f"Client 0x{src_hash:02X} not found in ACL for CLI reply")
+                logger.error(f"Client 0x{src_hash:02X} not found in identity 0x{dest_hash:02X} ACL for CLI reply")
                 return
             
             # Get shared secret from client
