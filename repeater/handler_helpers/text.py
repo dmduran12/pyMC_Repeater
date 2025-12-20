@@ -44,18 +44,12 @@ class TextHelper:
         self.config = config
         self.save_config_callback = save_config_callback
         
-        # Initialize CLI handler if config provided
+        # Store for later CLI initialization (needs identity and storage)
+        self.config_path = config_path
+        self.config = config
+        
+        # Initialize CLI handler later when repeater identity is registered
         self.cli = None
-        if config_path and config and save_config_callback:
-            self.cli = MeshCLI(
-                config_path, 
-                config, 
-                save_config_callback,
-                identity_type="repeater",
-                enable_regions=True,
-                send_advert_callback=send_advert_callback
-            )
-            logger.info("Initialized CLI handler for repeater commands")
 
     def register_identity(
         self, 
@@ -98,6 +92,20 @@ class TextHelper:
         if identity_type == "repeater":
             self.repeater_hash = hash_byte
             logger.info(f"Set repeater hash for CLI: 0x{hash_byte:02X}")
+            
+            # Initialize CLI handler now that we have the repeater identity
+            if self.config_path and self.config and self.save_config_callback:
+                self.cli = MeshCLI(
+                    self.config_path,
+                    self.config,
+                    self.save_config_callback,
+                    identity_type="repeater",
+                    enable_regions=True,
+                    send_advert_callback=self.send_advert_callback,
+                    identity=identity,
+                    storage_handler=self.sqlite_handler
+                )
+                logger.info("Initialized CLI handler for repeater commands with identity and storage")
         
         # Create RoomServer instance for room_server identities
         if identity_type == "room_server" and self.sqlite_handler:

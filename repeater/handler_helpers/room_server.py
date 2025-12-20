@@ -150,9 +150,11 @@ class RoomServer:
                 save_config_callback,
                 identity_type="room_server",
                 enable_regions=False,  # Room servers don't support region commands
-                send_advert_callback=send_room_advert
+                send_advert_callback=send_room_advert,
+                identity=local_identity,
+                storage_handler=sqlite_handler
             )
-            logger.info(f"Room '{room_name}': Initialized CLI handler")
+            logger.info(f"Room '{room_name}': Initialized CLI handler with identity and storage")
         
         # Enforce hard limit (match C++ MAX_UNSYNCED_POSTS)
         if max_posts > MAX_UNSYNCED_POSTS:

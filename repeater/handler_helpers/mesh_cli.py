@@ -16,7 +16,9 @@ class MeshCLI:
         save_config_callback: Callable,
         identity_type: str = "repeater",
         enable_regions: bool = True,
-        send_advert_callback: Optional[Callable] = None
+        send_advert_callback: Optional[Callable] = None,
+        identity = None,
+        storage_handler = None
     ):
 
         self.config_path = Path(config_path)
@@ -25,6 +27,8 @@ class MeshCLI:
         self.identity_type = identity_type
         self.enable_regions = enable_regions
         self.send_advert_callback = send_advert_callback
+        self.identity = identity
+        self.storage_handler = storage_handler
         
         # Get repeater config shortcut
         self.repeater_config = config.get('repeater', {})
@@ -245,8 +249,15 @@ class MeshCLI:
             return f"> {power}"
         
         elif param == "public.key":
-            # TODO: Get from identity
-            return "Error: Not yet implemented"
+            if not self.identity:
+                return "Error: Identity not available"
+            try:
+                pubkey = self.identity.get_public_key()
+                pubkey_hex = pubkey.hex()
+                return f"> {pubkey_hex}"
+            except Exception as e:
+                logger.error(f"Failed to get public key: {e}")
+                return f"Error: {e}"
         
         elif param == "role":
             role = "room_server" if self.identity_type == "room_server" else "repeater"
@@ -498,8 +509,55 @@ class MeshCLI:
     
     def _cmd_neighbors(self) -> str:
         """List neighbors."""
-        # TODO: Get neighbors from routing table
-        return "Error: Not yet implemented"
+        if not self.storage_handler:
+            return "Error: Storage not available"
+        
+        try:
+            neighbors = self.storage_handler.get_neighbors()
+            
+            if not neighbors:
+                return "No neighbors discovered yet"
+            
+            # Filter to only show repeaters and zero hop nodes
+            filtered_neighbors = {
+                pubkey: info for pubkey, info in neighbors.items()
+                if info.get('is_repeater', False) or info.get('zero_hop', False)
+            }
+            
+            if not filtered_neighbors:
+                return "No repeaters or zero hop neighbors discovered yet"
+            
+            # Format output similar to C++ version
+            # Format: "<pubkey_prefix> heard Xs ago"
+            import time
+            current_time = int(time.time())
+            
+            lines = []
+            for pubkey, info in filtered_neighbors.items():
+                last_seen = info.get('last_seen', 0)
+                seconds_ago = current_time - last_seen
+                
+                # Get short pubkey (first 8 chars)
+                pubkey_short = pubkey[:8] if len(pubkey) >= 8 else pubkey
+                node_name = info.get('node_name') or 'Unknown'
+                
+                # Format time ago
+                if seconds_ago < 60:
+                    time_str = f"{seconds_ago}s ago"
+                elif seconds_ago < 3600:
+                    time_str = f"{seconds_ago // 60}m ago"
+                elif seconds_ago < 86400:
+                    time_str = f"{seconds_ago // 3600}h ago"
+                else:
+                    time_str = f"{seconds_ago // 86400}d ago"
+                
+                lines.append(f"<{pubkey_short}> {node_name} heard {time_str}")
+            
+            return "\n".join(lines)
+            
+        except Exception as e:
+            logger.error(f"Failed to list neighbors: {e}", exc_info=True)
+            return f"Error: {e}"
     
     def _cmd_neighbor_remove(self, command: str) -> str:
         """Remove a neighbor."""

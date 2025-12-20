@@ -557,7 +557,7 @@ class SQLiteHandler:
                 
                 neighbors = conn.execute("""
                     SELECT pubkey, node_name, is_repeater, route_type, contact_type,
-                           latitude, longitude, first_seen, last_seen, rssi, snr, advert_count
+                           latitude, longitude, first_seen, last_seen, rssi, snr, advert_count, zero_hop
                     FROM adverts a1
                     WHERE last_seen = (
                         SELECT MAX(last_seen) 
@@ -581,6 +581,7 @@ class SQLiteHandler:
                         "rssi": row["rssi"],
                         "snr": row["snr"],
                         "advert_count": row["advert_count"],
+                        "zero_hop": bool(row["zero_hop"]),
                     }
                 
                 return result
