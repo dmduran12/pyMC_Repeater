@@ -619,6 +619,57 @@ class RepeaterHandler(BaseHandler):
             await asyncio.sleep(delay)
             try:
                 await self.dispatcher.send_packet(fwd_pkt, wait_for_ack=False)
+                
+                # Extract LBT metrics if available (stored by dispatcher on packet)
+                lbt_attempts = 0
+                lbt_backoff_delays_ms = []
+                lbt_channel_busy = False
+                
+                if hasattr(fwd_pkt, '_tx_metadata') and fwd_pkt._tx_metadata:
+                    lbt_attempts = fwd_pkt._tx_metadata.get('lbt_attempts', 0)
+                    lbt_backoff_delays_ms = fwd_pkt._tx_metadata.get('lbt_backoff_delays_ms', [])
+                    lbt_channel_busy = fwd_pkt._tx_metadata.get('lbt_channel_busy', False)
+                    
+                    if lbt_attempts > 0:
+                        total_lbt_delay = sum(lbt_backoff_delays_ms)
+                        logger.info(
+                            f"LBT: {lbt_attempts} attempts, {total_lbt_delay:.0f}ms delay, "
+                            f"backoffs={lbt_backoff_delays_ms}"
+                        )
+                    
+                    # Store TX packet record with LBT metrics if storage is available
+                    if self.storage and lbt_attempts > 0:
+                        try:
+                            tx_record = {
+                                "timestamp": time.time(),
+                                "header": f"0x{fwd_pkt.header:02X}" if hasattr(fwd_pkt, "header") else None,
+                                "payload": fwd_pkt.payload.hex() if hasattr(fwd_pkt, "payload") and fwd_pkt.payload else None,
+                                "payload_length": len(fwd_pkt.payload) if hasattr(fwd_pkt, "payload") and fwd_pkt.payload else 0,
+                                "type": (fwd_pkt.header >> 4) if hasattr(fwd_pkt, "header") else 0,
+                                "route": (fwd_pkt.header & 0x07) if hasattr(fwd_pkt, "header") else 0,
+                                "length": len(fwd_pkt.payload or b""),
+                                "rssi": None,  # TX packets don't have RSSI
+                                "snr": None,   # TX packets don't have SNR
+                                "score": None,
+                                "tx_delay_ms": delay * 1000.0,
+                                "transmitted": True,
+                                "is_duplicate": False,
+                                "packet_hash": fwd_pkt.write_to().hex()[:16] if hasattr(fwd_pkt, "write_to") else "",
+                                "drop_reason": None,
+                                "path_hash": None,
+                                "src_hash": None,
+                                "dst_hash": None,
+                                "original_path": None,
+                                "forwarded_path": [f"{b:02X}" for b in fwd_pkt.path] if hasattr(fwd_pkt, "path") and fwd_pkt.path else None,
+                                "raw_packet": fwd_pkt.write_to().hex() if hasattr(fwd_pkt, "write_to") else None,
+                                "lbt_attempts": lbt_attempts,
+                                "lbt_backoff_delays_ms": lbt_backoff_delays_ms,
+                                "lbt_channel_busy": lbt_channel_busy,
+                            }
+                            self.storage.record_packet(tx_record, skip_letsmesh_if_invalid=False)
+                        except Exception as e:
+                            logger.error(f"Failed to store TX packet record with LBT metrics: {e}")
+                
                 # Record airtime after successful TX
                 if airtime_ms > 0:
                     self.airtime_mgr.record_tx(airtime_ms)

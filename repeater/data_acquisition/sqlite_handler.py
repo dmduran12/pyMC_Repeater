@@ -178,6 +178,37 @@ class SQLiteHandler:
                     )
                     logger.info(f"Migration '{migration_name}' applied successfully")
                 
+                # Migration 2: Add LBT metrics columns to packets table
+                migration_name = "add_lbt_metrics_to_packets"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,)
+                ).fetchone()
+                
+                if not existing:
+                    # Check if columns already exist
+                    cursor = conn.execute("PRAGMA table_info(packets)")
+                    columns = [column[1] for column in cursor.fetchall()]
+                    
+                    if "lbt_attempts" not in columns:
+                        conn.execute("ALTER TABLE packets ADD COLUMN lbt_attempts INTEGER DEFAULT 0")
+                        logger.info("Added lbt_attempts column to packets table")
+                    
+                    if "lbt_backoff_delays_ms" not in columns:
+                        conn.execute("ALTER TABLE packets ADD COLUMN lbt_backoff_delays_ms TEXT")
+                        logger.info("Added lbt_backoff_delays_ms column to packets table")
+                    
+                    if "lbt_channel_busy" not in columns:
+                        conn.execute("ALTER TABLE packets ADD COLUMN lbt_channel_busy BOOLEAN DEFAULT FALSE")
+                        logger.info("Added lbt_channel_busy column to packets table")
+                    
+                    # Mark migration as applied
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time())
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+                
                 conn.commit()
                 
         except Exception as e:
@@ -202,8 +233,9 @@ class SQLiteHandler:
                         timestamp, type, route, length, rssi, snr, score,
                         transmitted, is_duplicate, drop_reason, src_hash, dst_hash, path_hash,
                         header, transport_codes, payload, payload_length, 
-                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet,
+                        lbt_attempts, lbt_backoff_delays_ms, lbt_channel_busy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     record.get("timestamp", time.time()),
                     record.get("type", 0),
@@ -226,7 +258,10 @@ class SQLiteHandler:
                     record.get("packet_hash"),
                     orig_path_val,
                     fwd_path_val,
-                    record.get("raw_packet")
+                    record.get("raw_packet"),
+                    record.get("lbt_attempts", 0),
+                    json.dumps(record.get("lbt_backoff_delays_ms")) if record.get("lbt_backoff_delays_ms") else None,
+                    int(bool(record.get("lbt_channel_busy", False)))
                 ))
                 
         except Exception as e:
@@ -369,7 +404,8 @@ class SQLiteHandler:
                         timestamp, type, route, length, rssi, snr, score,
                         transmitted, is_duplicate, drop_reason, src_hash, dst_hash, path_hash,
                         header, transport_codes, payload, payload_length, 
-                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet
+                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet,
+                        lbt_attempts, lbt_backoff_delays_ms, lbt_channel_busy
                     FROM packets 
                     ORDER BY timestamp DESC
                     LIMIT ?
@@ -415,7 +451,8 @@ class SQLiteHandler:
                         timestamp, type, route, length, rssi, snr, score,
                         transmitted, is_duplicate, drop_reason, src_hash, dst_hash, path_hash,
                         header, transport_codes, payload, payload_length, 
-                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet
+                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet,
+                        lbt_attempts, lbt_backoff_delays_ms, lbt_channel_busy
                     FROM packets
                 """
                 
@@ -445,7 +482,8 @@ class SQLiteHandler:
                         timestamp, type, route, length, rssi, snr, score,
                         transmitted, is_duplicate, drop_reason, src_hash, dst_hash, path_hash,
                         header, transport_codes, payload, payload_length, 
-                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet
+                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet,
+                        lbt_attempts, lbt_backoff_delays_ms, lbt_channel_busy
                     FROM packets 
                     WHERE packet_hash = ?
                 """, (packet_hash,)).fetchone()
