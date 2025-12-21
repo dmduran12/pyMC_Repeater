@@ -166,8 +166,11 @@ class RepeaterHandler(BaseHandler):
             else:
                 self.forwarded_count += 1
                 transmitted = True
-                # Schedule retransmit with delay
-                await self.schedule_retransmit(fwd_pkt, delay, airtime_ms)
+                # Schedule retransmit with delay (returns task)
+                tx_task = await self.schedule_retransmit(fwd_pkt, delay, airtime_ms)
+                
+                # Wait for transmission to complete to get LBT metadata
+                await tx_task
                 
                 # Extract LBT metadata after transmission
                 tx_metadata = getattr(fwd_pkt, '_tx_metadata', None)
@@ -637,7 +640,7 @@ class RepeaterHandler(BaseHandler):
             return None
 
     async def schedule_retransmit(self, fwd_pkt: Packet, delay: float, airtime_ms: float = 0.0):
-
+        """Schedule a packet retransmission with delay and return the task."""
         async def delayed_send():
             await asyncio.sleep(delay)
             try:
@@ -653,7 +656,7 @@ class RepeaterHandler(BaseHandler):
             except Exception as e:
                 logger.error(f"Retransmit failed: {e}")
 
-        asyncio.create_task(delayed_send())
+        return asyncio.create_task(delayed_send())
 
     def get_noise_floor(self) -> Optional[float]:
         try:
