@@ -620,15 +620,16 @@ class RepeaterHandler(BaseHandler):
             try:
                 await self.dispatcher.send_packet(fwd_pkt, wait_for_ack=False)
                 
-                # Extract LBT metrics if available (stored by dispatcher on packet)
+
+                tx_metadata = getattr(fwd_pkt, '_tx_metadata', None)
                 lbt_attempts = 0
                 lbt_backoff_delays_ms = []
                 lbt_channel_busy = False
                 
-                if hasattr(fwd_pkt, '_tx_metadata') and fwd_pkt._tx_metadata:
-                    lbt_attempts = fwd_pkt._tx_metadata.get('lbt_attempts', 0)
-                    lbt_backoff_delays_ms = fwd_pkt._tx_metadata.get('lbt_backoff_delays_ms', [])
-                    lbt_channel_busy = fwd_pkt._tx_metadata.get('lbt_channel_busy', False)
+                if tx_metadata:
+                    lbt_attempts = tx_metadata.get('lbt_attempts', 0)
+                    lbt_backoff_delays_ms = tx_metadata.get('lbt_backoff_delays_ms', [])
+                    lbt_channel_busy = tx_metadata.get('lbt_channel_busy', False)
                     
                     if lbt_attempts > 0:
                         total_lbt_delay = sum(lbt_backoff_delays_ms)
