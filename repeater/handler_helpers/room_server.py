@@ -494,6 +494,10 @@ class RoomServer:
                 push_failures = sync_state.get('push_failures', 0)
                 last_activity = sync_state.get('last_activity', 0)
                 
+                # Skip already-evicted clients (marked with last_activity=0)
+                if last_activity == 0:
+                    continue
+                
                 evict = False
                 reason = ""
                 
