@@ -199,7 +199,51 @@ storage:
 letsmesh:
   enabled: false
   iata_code: "Test"  # e.g., "SFO", "LHR", "Test"
-  broker_index: 0                  # Which LetsMesh broker (0=EU, 1=US West)
+  
+  # ============================================================
+  # BROKER SELECTION MODE - Choose how to connect to brokers
+  # ============================================================
+  # 
+  # EXAMPLE 1: Single built-in broker (default, most common)
+  # Connect to Europe only - simple, low bandwidth
+  broker_index: 0    # 0 = Europe, 1 = US West
+  
+  # EXAMPLE 2: All built-in brokers for maximum redundancy
+  # Survives single broker failure, best uptime
+  # broker_index: -1  # or null - connects to both EU and US
+  
+  # EXAMPLE 3: Only custom brokers (private/self-hosted)
+  # Ignores built-in LetsMesh brokers completely
+  # broker_index: -2
+  # additional_brokers:
+  #   - name: "Private Server"
+  #     host: "mqtt.myserver.com"
+  #     port: 443
+  #     audience: "mqtt.myserver.com"
+  
+  # EXAMPLE 4: Single built-in + custom backup
+  # Use EU primary with your own backup
+  # broker_index: 0
+  # additional_brokers:
+  #   - name: "Backup Server"
+  #     host: "mqtt-backup.mydomain.com"
+  #     port: 8883
+  #     audience: "mqtt-backup.mydomain.com"
+  
+  # EXAMPLE 5: All built-in + multiple custom (maximum redundancy)
+  # EU + US + your own servers - best for critical deployments
+  # broker_index: -1
+  # additional_brokers:
+  #   - name: "Custom Primary"
+  #     host: "mqtt-1.mydomain.com"
+  #     port: 443
+  #     audience: "mqtt-1.mydomain.com"
+  #   - name: "Custom Backup"
+  #     host: "mqtt-2.mydomain.com"
+  #     port: 443
+  #     audience: "mqtt-2.mydomain.com"
+  # ============================================================
+  
   status_interval: 300
   owner: ""
   email: ""
