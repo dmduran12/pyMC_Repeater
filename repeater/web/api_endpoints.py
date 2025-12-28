@@ -596,6 +596,171 @@ class APIEndpoints:
             logger.error(f"Error saving CAD settings: {e}")
             return self._error(e)
 
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in()
+    def update_radio_config(self):
+        """Update radio and repeater configuration with live updates.
+        
+        POST /api/update_radio_config
+        Body: {
+            "tx_power": 22,              # TX power in dBm (2-30)
+            "tx_delay_factor": 1.0,      # TX delay factor (0.0-5.0)
+            "direct_tx_delay_factor": 0.5,  # Direct TX delay (0.0-5.0)
+            "rx_delay_base": 0.0,        # RX delay base (>= 0)
+            "node_name": "MyNode",       # Node name
+            "latitude": 0.0,             # Latitude (-90 to 90)
+            "longitude": 0.0,            # Longitude (-180 to 180)
+            "max_flood_hops": 3,         # Max flood hops (0-64)
+            "flood_advert_interval_hours": 10,  # Flood advert interval (0 or 3-48)
+            "advert_interval_minutes": 120      # Local advert interval (0 or 1-10080)
+        }
+        
+        Returns: {"success": true, "data": {"applied": [...], "live_update": true}}
+        """
+        try:
+            self._require_post()
+            data = cherrypy.request.json or {}
+            
+            applied = []
+            
+            # Ensure config sections exist
+            if "radio" not in self.config:
+                self.config["radio"] = {}
+            if "delays" not in self.config:
+                self.config["delays"] = {}
+            if "repeater" not in self.config:
+                self.config["repeater"] = {}
+            
+            # Update TX power (up to 30 dBm for high-power radios)
+            if "tx_power" in data:
+                power = int(data["tx_power"])
+                if power < 2 or power > 30:
+                    return self._error("TX power must be 2-30 dBm")
+                self.config["radio"]["tx_power"] = power
+                applied.append(f"power={power}dBm")
+            
+            # Update TX delay factor
+            if "tx_delay_factor" in data:
+                tdf = float(data["tx_delay_factor"])
+                if tdf < 0.0 or tdf > 5.0:
+                    return self._error("TX delay factor must be 0.0-5.0")
+                self.config["delays"]["tx_delay_factor"] = tdf
+                applied.append(f"txdelay={tdf}")
+            
+            # Update direct TX delay factor
+            if "direct_tx_delay_factor" in data:
+                dtdf = float(data["direct_tx_delay_factor"])
+                if dtdf < 0.0 or dtdf > 5.0:
+                    return self._error("Direct TX delay factor must be 0.0-5.0")
+                self.config["delays"]["direct_tx_delay_factor"] = dtdf
+                applied.append(f"direct.txdelay={dtdf}")
+            
+            # Update RX delay base
+            if "rx_delay_base" in data:
+                rxd = float(data["rx_delay_base"])
+                if rxd < 0.0:
+                    return self._error("RX delay cannot be negative")
+                self.config["delays"]["rx_delay_base"] = rxd
+                applied.append(f"rxdelay={rxd}")
+            
+            # Update node name
+            if "node_name" in data:
+                name = str(data["node_name"]).strip()
+                if not name:
+                    return self._error("Node name cannot be empty")
+                self.config["repeater"]["node_name"] = name
+                applied.append(f"name={name}")
+            
+            # Update latitude
+            if "latitude" in data:
+                lat = float(data["latitude"])
+                if lat < -90 or lat > 90:
+                    return self._error("Latitude must be -90 to 90")
+                self.config["repeater"]["latitude"] = lat
+                applied.append(f"lat={lat}")
+            
+            # Update longitude
+            if "longitude" in data:
+                lon = float(data["longitude"])
+                if lon < -180 or lon > 180:
+                    return self._error("Longitude must be -180 to 180")
+                self.config["repeater"]["longitude"] = lon
+                applied.append(f"lon={lon}")
+            
+            # Update max flood hops
+            if "max_flood_hops" in data:
+                hops = int(data["max_flood_hops"])
+                if hops < 0 or hops > 64:
+                    return self._error("Max flood hops must be 0-64")
+                self.config["repeater"]["max_flood_hops"] = hops
+                applied.append(f"flood.max={hops}")
+            
+            # Update flood advert interval (hours)
+            if "flood_advert_interval_hours" in data:
+                hours = int(data["flood_advert_interval_hours"])
+                if hours != 0 and (hours < 3 or hours > 48):
+                    return self._error("Flood advert interval must be 0 (off) or 3-48 hours")
+                self.config["repeater"]["send_advert_interval_hours"] = hours
+                applied.append(f"flood.advert.interval={hours}h")
+            
+            # Update local advert interval (minutes)
+            if "advert_interval_minutes" in data:
+                mins = int(data["advert_interval_minutes"])
+                if mins != 0 and (mins < 1 or mins > 10080):
+                    return self._error("Advert interval must be 0 (off) or 1-10080 minutes")
+                self.config["repeater"]["advert_interval_minutes"] = mins
+                applied.append(f"advert.interval={mins}m")
+            
+            if not applied:
+                return self._error("No valid settings provided")
+            
+            # Save to config file
+            config_path = getattr(self, '_config_path', '/etc/pymc_repeater/config.yaml')
+            self._save_config_to_file(config_path)
+            
+            # Live update: Also update daemon's in-memory config for immediate effect
+            live_updated = False
+            if self.daemon_instance and hasattr(self.daemon_instance, 'config'):
+                try:
+                    daemon_config = self.daemon_instance.config
+                    
+                    # Update repeater section in daemon config
+                    if 'repeater' not in daemon_config:
+                        daemon_config['repeater'] = {}
+                    for key in ['node_name', 'latitude', 'longitude', 'max_flood_hops', 
+                                'advert_interval_minutes', 'send_advert_interval_hours']:
+                        if key in self.config.get('repeater', {}):
+                            daemon_config['repeater'][key] = self.config['repeater'][key]
+                    
+                    # Update delays section in daemon config
+                    if 'delays' not in daemon_config:
+                        daemon_config['delays'] = {}
+                    for key in ['tx_delay_factor', 'direct_tx_delay_factor', 'rx_delay_base']:
+                        if key in self.config.get('delays', {}):
+                            daemon_config['delays'][key] = self.config['delays'][key]
+                    
+                    live_updated = True
+                    logger.info("Live updated daemon config")
+                except Exception as e:
+                    logger.warning(f"Could not live update daemon config: {e}")
+            
+            logger.info(f"Radio config updated: {', '.join(applied)}")
+            
+            return self._success({
+                "applied": applied,
+                "persisted": True,
+                "live_update": live_updated,
+                "restart_required": not live_updated,
+                "message": "Settings applied immediately." if live_updated else "Settings saved. Restart service to apply changes."
+            })
+            
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating radio config: {e}")
+            return self._error(str(e))
+
     def _save_config_to_file(self, config_path):
         try:
             import yaml
