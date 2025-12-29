@@ -185,6 +185,12 @@ class APIEndpoints:
     @cherrypy.expose
     @cherrypy.tools.json_out()
     def send_advert(self):
+        # Enable CORS for this endpoint
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             self._require_post()
             if not self.send_advert_func:
@@ -206,6 +212,12 @@ class APIEndpoints:
     @cherrypy.tools.json_out()
     @cherrypy.tools.json_in()
     def set_mode(self):
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             self._require_post()
             data = cherrypy.request.json
@@ -228,6 +240,12 @@ class APIEndpoints:
     @cherrypy.tools.json_out()
     @cherrypy.tools.json_in()
     def set_duty_cycle(self):
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             self._require_post()
             data = cherrypy.request.json
@@ -618,6 +636,12 @@ class APIEndpoints:
         
         Returns: {"success": true, "data": {"applied": [...], "live_update": true}}
         """
+        # Enable CORS for this endpoint only if configured
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
         try:
             self._require_post()
             data = cherrypy.request.json or {}

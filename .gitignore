@@ -48,3 +48,4 @@ identity.json
 # Logs
 *.log
 .DS_Store
+syncpi.sh
