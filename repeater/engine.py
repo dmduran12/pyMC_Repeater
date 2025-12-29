@@ -715,6 +715,9 @@ class RepeaterHandler(BaseHandler):
                     "send_advert_interval_hours": self.send_advert_interval_hours,
                     "latitude": repeater_config.get("latitude", 0.0),
                     "longitude": repeater_config.get("longitude", 0.0),
+                    # PYMC_CONSOLE_STATS_PATCH - MeshCore CLI parity
+                    "max_flood_hops": repeater_config.get("max_flood_hops", 3),
+                    "advert_interval_minutes": repeater_config.get("advert_interval_minutes", 120),
                 },
                 "radio": {
                     "frequency": self.radio_config.get("frequency", 0),
@@ -731,6 +734,7 @@ class RepeaterHandler(BaseHandler):
                 "delays": {
                     "tx_delay_factor": delays_config.get("tx_delay_factor", 1.0),
                     "direct_tx_delay_factor": delays_config.get("direct_tx_delay_factor", 0.5),
+                    "rx_delay_base": delays_config.get("rx_delay_base", 0.0),
                 },
             },
             "public_key": None,
