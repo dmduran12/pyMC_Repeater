@@ -141,6 +141,10 @@ sx1262:
 
   use_dio3_tcxo: false
 
+  # Enable DIO2 as RF switch control
+  # Required for some modules that use DIO2 for TX/RX switching
+  use_dio2_rf: false
+
   # Waveshare hardware flag
   is_waveshare: false
 
