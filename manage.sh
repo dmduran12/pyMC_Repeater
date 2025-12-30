@@ -9,6 +9,97 @@ LOG_DIR="/var/log/pymc_repeater"
 SERVICE_USER="repeater"
 SERVICE_NAME="pymc-repeater"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATCH REGISTRY
+# Patches applied after pip install to add features not yet merged upstream.
+# Remove patches once merged into the referenced pymc_core branch.
+# ═══════════════════════════════════════════════════════════════════════════════
+# 
+# Active patches:
+#   - patch_dio2_rf_switch: Add use_dio2_rf config option (PR #26 pymc_core, PR #41 pymc_repeater)
+#
+# Merged patches (safe to remove):
+#   (none)
+#
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATCH FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Apply all active patches
+apply_patches() {
+    patch_dio2_rf_switch
+}
+
+# Patch: Add use_dio2_rf parameter to SX1262Radio
+# PR: https://github.com/rightup/pyMC_core/pull/26
+# PR: https://github.com/rightup/pyMC_Repeater/pull/41
+patch_dio2_rf_switch() {
+    echo "[PATCH] Adding use_dio2_rf support..."
+    
+    # Find the installed pymc_core location
+    local PYMC_CORE_PATH=$(python3 -c "import pymc_core; print(pymc_core.__path__[0])" 2>/dev/null)
+    
+    if [ -z "$PYMC_CORE_PATH" ]; then
+        echo "    ⚠ Could not find pymc_core installation path, skipping patch"
+        return 1
+    fi
+    
+    local WRAPPER_FILE="$PYMC_CORE_PATH/hardware/sx1262_wrapper.py"
+    
+    if [ ! -f "$WRAPPER_FILE" ]; then
+        echo "    ⚠ sx1262_wrapper.py not found at $WRAPPER_FILE, skipping patch"
+        return 1
+    fi
+    
+    # Check if already patched
+    if grep -q "use_dio2_rf" "$WRAPPER_FILE"; then
+        echo "    ✓ Already patched (use_dio2_rf exists)"
+        return 0
+    fi
+    
+    # Patch 1: Add use_dio2_rf parameter to __init__
+    sed -i 's/dio3_tcxo_voltage: float = 1.8,$/dio3_tcxo_voltage: float = 1.8,\n        use_dio2_rf: bool = False,/' "$WRAPPER_FILE"
+    
+    # Patch 2: Add docstring for use_dio2_rf
+    sed -i 's/dio3_tcxo_voltage: TCXO reference voltage in volts (default: 1.8)$/dio3_tcxo_voltage: TCXO reference voltage in volts (default: 1.8)\n            use_dio2_rf: Enable DIO2 as RF switch control (default: False)/' "$WRAPPER_FILE"
+    
+    # Patch 3: Store use_dio2_rf in __init__
+    sed -i 's/self.dio3_tcxo_voltage = dio3_tcxo_voltage$/self.dio3_tcxo_voltage = dio3_tcxo_voltage\n        self.use_dio2_rf = use_dio2_rf/' "$WRAPPER_FILE"
+    
+    # Patch 4: Use use_dio2_rf in begin() method
+    sed -i 's/self.lora.setDio2RfSwitch(False)/self.lora.setDio2RfSwitch(self.use_dio2_rf)\n                if self.use_dio2_rf:\n                    logger.info("DIO2 RF switch control enabled")/' "$WRAPPER_FILE"
+    
+    # Verify patch was applied
+    if grep -q "use_dio2_rf" "$WRAPPER_FILE"; then
+        echo "    ✓ Patched sx1262_wrapper.py"
+    else
+        echo "    ✗ Failed to patch sx1262_wrapper.py"
+        return 1
+    fi
+    
+    # Patch repeater config.py to pass use_dio2_rf
+    local CONFIG_PY="$INSTALL_DIR/repeater/config.py"
+    
+    if [ -f "$CONFIG_PY" ]; then
+        if grep -q "use_dio2_rf" "$CONFIG_PY"; then
+            echo "    ✓ config.py already has use_dio2_rf"
+        else
+            # Add use_dio2_rf to combined_config after use_dio3_tcxo
+            sed -i 's/"use_dio3_tcxo": spi_config.get("use_dio3_tcxo", False),$/"use_dio3_tcxo": spi_config.get("use_dio3_tcxo", False),\n            "use_dio2_rf": spi_config.get("use_dio2_rf", False),/' "$CONFIG_PY"
+            
+            if grep -q "use_dio2_rf" "$CONFIG_PY"; then
+                echo "    ✓ Patched config.py"
+            else
+                echo "    ⚠ Failed to patch config.py (may need manual update)"
+            fi
+        fi
+    fi
+    
+    echo "    ✓ DIO2 RF switch patch complete"
+    echo "    → Add 'use_dio2_rf: true' to config.yaml under sx1262: section to enable"
+}
+
 # Check if we're running in an interactive terminal
 if [ ! -t 0 ] || [ -z "$TERM" ]; then
     echo "Error: This script requires an interactive terminal."
@@ -265,6 +356,12 @@ install_repeater() {
         echo ""
         echo "✓ Python package installation completed successfully!"
         
+        # Apply patches for features not yet merged upstream
+        echo ""
+        echo "=== Applying Patches ==="
+        apply_patches
+        echo "=== Patches Complete ==="
+        
         # Start the service
         systemctl start "$SERVICE_NAME"
     else
@@ -395,6 +492,12 @@ upgrade_repeater() {
         if pip install --break-system-packages --force-reinstall --no-cache-dir --ignore-installed .; then
             echo ""
             echo "✓ Python package update completed successfully!"
+            
+            # Apply patches for features not yet merged upstream
+            echo ""
+            echo "=== Applying Patches ==="
+            apply_patches
+            echo "=== Patches Complete ==="
         else
             echo ""
             echo "⚠ Python package update failed, but continuing..."
