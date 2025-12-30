@@ -26,18 +26,21 @@ My hope is that **pyMC_repeater** serves as a solid, approachable foundation tha
 
 The repeater daemon runs continuously as a background process, forwarding LoRa packets using `pymc_core`'s Dispatcher and packet routing.
 
-Supported Hardware (Out of the Box)
+---
+
+## Supported Hardware (Out of the Box)
 
 The following hardware is currently supported out-of-the-box:
 
-Waveshare LoRaWAN/GNSS HAT
+Waveshare LoRaWAN/GNSS HAT (SPI Version Only)
 
-    Hardware: Waveshare SX1262 LoRa HAT
+    Hardware: Waveshare SX1262 LoRa HAT (SPI interface - UART version not supported)
     Platform: Raspberry Pi (or compatible single-board computer)
     Frequency: 868MHz (EU) or 915MHz (US)
     TX Power: Up to 22dBm
     SPI Bus: SPI0
     GPIO Pins: CS=21, Reset=18, Busy=20, IRQ=16
+    Note: Only the SPI version is supported. The UART version will not work.
 
 HackerGadgets uConsole
 
@@ -107,6 +110,12 @@ You should see something like:
 /dev/spidev0.0  /dev/spidev0.1
 ```
 
+**Install Git (if not already installed):**
+```bash
+sudo apt update
+sudo apt install git -y
+```
+
 **Clone the Repository:**
 ```bash
 git clone https://github.com/rightup/pyMC_Repeater.git
@@ -115,7 +124,7 @@ cd pyMC_Repeater
 
 **Quick Install:**
 ```bash
-sudo bash manage.sh
+sudo ./manage.sh
 ```
 
 This script will:
@@ -149,7 +158,10 @@ The configuration file is created and configured during installation at:
 
 To reconfigure radio and hardware settings after installation, run:
 ```bash
-sudo bash setup-radio-config.sh /etc/pymc_repeater or sudo bash manage.sh
+sudo bash setup-radio-config.sh /etc/pymc_repeater
+# or
+sudo ./manage.sh
+# then restart the service
 sudo systemctl restart pymc-repeater
 
 ```
@@ -162,7 +174,7 @@ To upgrade an existing installation to the latest version:
 cd pyMC_Repeater
 
 # Run the upgrade script
-sudo bash manage.sh
+sudo ./manage.sh
 ```
 
 The upgrade script will:
@@ -178,7 +190,7 @@ The upgrade script will:
 ## Uninstallation
 
 ```bash
-sudo bash manage.sh
+sudo ./manage.sh
 ```
 
 This script will:
@@ -242,10 +254,24 @@ Pre-commit hooks will automatically:
 ## Support
 
 - [Core Lib Documentation](https://rightup.github.io/pyMC_core/)
-- [Meshcore Discord](https://discord.gg/fThwBrRc3Q)
+- [Meshcore Discord](https://discordapp.com/channels/1343693475589263471/1431414286974189639)
 
 
 
+
+## Disclaimer
+
+**⚠️ Important Notice**
+
+This software has been tested on actual hardware, but is provided "as is" without warranty of any kind, express or implied. While care has been taken to ensure stability and reliability, I make no guarantees about the software's performance, compatibility, or suitability for any particular purpose.
+
+**By using this software, you acknowledge and agree that:**
+- You use this software entirely at your own risk
+- I hold no responsibility for any damage to hardware, data loss, or system failures
+- You are responsible for ensuring compliance with local radio regulations and licensing requirements
+- No support or warranty is guaranteed, though community assistance is available
+
+This software is intended for educational and experimental purposes. Always test in a controlled environment before deploying to production.
 
 ## License
 
