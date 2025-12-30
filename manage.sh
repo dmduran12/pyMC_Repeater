@@ -265,7 +265,8 @@ install_repeater() {
         echo ""
         echo "✓ Python package installation completed successfully!"
         
-        # Start the service
+        # Reload systemd and start the service
+        systemctl daemon-reload
         systemctl start "$SERVICE_NAME"
     else
         echo ""
@@ -401,6 +402,7 @@ upgrade_repeater() {
         fi
         
         echo "[8/9] Starting service..."
+        systemctl daemon-reload
         systemctl start "$SERVICE_NAME"
         echo "    ✓ Service started"
         
