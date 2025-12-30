@@ -204,7 +204,19 @@ install_repeater() {
     
     echo "25"; echo "# Installing system dependencies..."
     apt-get update -qq
-    apt-get install -y libffi-dev jq pip
+    apt-get install -y libffi-dev jq python3-pip python3-rrdtool wget swig build-essential python3-dev
+    
+    # Install mikefarah yq v4 if not already installed
+    if ! command -v yq &> /dev/null || [[ "$(yq --version 2>&1)" != *"mikefarah/yq"* ]]; then
+        YQ_VERSION="v4.40.5"
+        YQ_BINARY="yq_linux_arm64"
+        if [[ "$(uname -m)" == "x86_64" ]]; then
+            YQ_BINARY="yq_linux_amd64"
+        elif [[ "$(uname -m)" == "armv7"* ]]; then
+            YQ_BINARY="yq_linux_arm"
+        fi
+        wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${YQ_BINARY}" && chmod +x /usr/local/bin/yq
+    fi
     
     echo "30"; echo "# Installing files..."
     cp -r repeater "$INSTALL_DIR/"
@@ -226,20 +238,46 @@ install_repeater() {
     echo "65"; echo "# Setting permissions..."
     chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" /var/lib/pymc_repeater
     chmod 750 "$CONFIG_DIR" "$LOG_DIR" /var/lib/pymc_repeater
+    # Ensure the service user can create subdirectories in their home directory
+    chmod 755 /var/lib/pymc_repeater
+    # Pre-create the .config directory that the service will need
+    mkdir -p /var/lib/pymc_repeater/.config/pymc_repeater
+    chown -R "$SERVICE_USER:$SERVICE_USER" /var/lib/pymc_repeater/.config
     
-    echo "75"; echo "# Installing Python package..."
-    cd "$INSTALL_DIR"
-    pip install --break-system-packages -e . >/dev/null 2>&1
-    
-    echo "85"; echo "# Starting service..."
+    echo "75"; echo "# Starting service..."
     systemctl enable "$SERVICE_NAME"
-    systemctl start "$SERVICE_NAME"
     
-    echo "95"; echo "# Configuring radio..."
+    echo "90"; echo "# Installation files complete..."
     ) | $DIALOG --backtitle "pyMC Repeater Management" --title "Installing" --gauge "Setting up pyMC Repeater..." 8 70 0
     
+    # Install Python package outside of progress gauge for better error handling
+    clear
+    echo "=== Installing Python Dependencies ==="
+    echo ""
+    echo "Installing pymc_repeater and dependencies (including pymc_core from GitHub)..."
+    echo "This may take a few minutes..."
+    echo ""
+    
+    SCRIPT_DIR="$(dirname "$0")"
+    cd "$SCRIPT_DIR"
+    
+    if python3 -m pip install --break-system-packages --force-reinstall --no-cache-dir --ignore-installed .; then
+        echo ""
+        echo "✓ Python package installation completed successfully!"
+        
+        # Reload systemd and start the service
+        systemctl daemon-reload
+        systemctl start "$SERVICE_NAME"
+    else
+        echo ""
+        echo "✗ Python package installation failed!"
+        echo "Please check the error messages above and try again."
+        read -p "Press Enter to continue..." || true
+    fi
+    
     # Radio configuration
-    show_info "Radio Configuration" "Installation complete!\n\nNow let's configure your radio settings.\n\nPress OK to continue to radio configuration..."
+    echo ""
+    echo "=== Radio Configuration ==="
     
     # Run radio configuration
     SCRIPT_DIR="$(dirname "$0")"
@@ -291,39 +329,84 @@ upgrade_repeater() {
         show_info "Upgrading" "Starting upgrade process...\n\nThis may take a few minutes.\nProgress will be shown in the terminal."
         
         echo "=== Upgrade Progress ==="
-        echo "[1/7] Stopping service..."
+        echo "[1/9] Stopping service..."
         systemctl stop "$SERVICE_NAME" 2>/dev/null || true
         
-        echo "[2/7] Backing up configuration..."
+        echo "[2/9] Backing up configuration..."
         if [ -d "$CONFIG_DIR" ]; then
             cp -r "$CONFIG_DIR" "$CONFIG_DIR.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
             echo "    ✓ Configuration backed up"
         fi
         
-        echo "[3/7] Installing new files..."
+        echo "[3/9] Updating system dependencies..."
+        apt-get update -qq
+
+        apt-get install -y libffi-dev jq python3-pip python3-rrdtool wget swig build-essential python3-dev
+        
+        # Install mikefarah yq v4 if not already installed
+        if ! command -v yq &> /dev/null || [[ "$(yq --version 2>&1)" != *"mikefarah/yq"* ]]; then
+            YQ_VERSION="v4.40.5"
+            YQ_BINARY="yq_linux_arm64"
+            if [[ "$(uname -m)" == "x86_64" ]]; then
+                YQ_BINARY="yq_linux_amd64"
+            elif [[ "$(uname -m)" == "armv7"* ]]; then
+                YQ_BINARY="yq_linux_arm"
+            fi
+            wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${YQ_BINARY}" && chmod +x /usr/local/bin/yq
+        fi
+        echo "    ✓ Dependencies updated"
+        
+        echo "[4/9] Installing new files..."
         cp -r repeater "$INSTALL_DIR/" 2>/dev/null || true
         cp pyproject.toml "$INSTALL_DIR/" 2>/dev/null || true
         cp README.md "$INSTALL_DIR/" 2>/dev/null || true
         cp pymc-repeater.service /etc/systemd/system/ 2>/dev/null || true
         echo "    ✓ Files updated"
         
-        echo "[4/7] Updating Python package..."
-        cd "$INSTALL_DIR"
-        # Use timeout to prevent hanging and show output
-        timeout 120 pip install --break-system-packages -e . || {
-            echo "    ⚠ Python package install timed out or failed, continuing..."
-        }
-        echo "    ✓ Python package updated"
+        echo "[5/9] Validating and updating configuration..."
+        if validate_and_update_config; then
+            echo "    ✓ Configuration validated and updated"
+        else
+            echo "    ⚠ Configuration validation failed, keeping existing config"
+        fi
         
-        echo "[5/7] Reloading systemd..."
+        echo "[6/9] Fixing permissions..."
+        chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" /var/lib/pymc_repeater 2>/dev/null || true
+        chmod 750 "$CONFIG_DIR" "$LOG_DIR" 2>/dev/null || true
+        chmod 755 /var/lib/pymc_repeater 2>/dev/null || true
+        # Pre-create the .config directory that the service will need
+        mkdir -p /var/lib/pymc_repeater/.config/pymc_repeater 2>/dev/null || true
+        chown -R "$SERVICE_USER:$SERVICE_USER" /var/lib/pymc_repeater/.config 2>/dev/null || true
+        echo "    ✓ Permissions updated"
+        
+        echo "[7/9] Reloading systemd..."
         systemctl daemon-reload
         echo "    ✓ Systemd reloaded"
         
-        echo "[6/7] Starting service..."
+        echo "=== Installing Python Dependencies ==="
+        echo ""
+        echo "Updating pymc_repeater and dependencies (including pymc_core from GitHub)..."
+        echo "This may take a few minutes..."
+        echo ""
+        
+        # Install from source directory to properly resolve Git dependencies
+        SCRIPT_DIR="$(dirname "$0")"
+        cd "$SCRIPT_DIR"
+        
+        if python3 -m pip install --break-system-packages --force-reinstall --no-cache-dir --ignore-installed .; then
+            echo ""
+            echo "✓ Python package update completed successfully!"
+        else
+            echo ""
+            echo "⚠ Python package update failed, but continuing..."
+        fi
+        
+        echo "[8/9] Starting service..."
+        systemctl daemon-reload
         systemctl start "$SERVICE_NAME"
         echo "    ✓ Service started"
         
-        echo "[7/7] Verifying installation..."
+        echo "[9/9] Verifying installation..."
         sleep 3  # Give service time to start
         
         local new_version=$(get_version)
@@ -518,6 +601,73 @@ show_detailed_status() {
     fi
     
     show_info "System Status" "$status_info"
+}
+
+# Function to validate and update configuration
+validate_and_update_config() {
+    local config_file="$CONFIG_DIR/config.yaml"
+    local example_file="config.yaml.example"
+    local updated_example="$CONFIG_DIR/config.yaml.example"
+    
+    # Copy the new example file
+    if [ -f "$example_file" ]; then
+        cp "$example_file" "$updated_example"
+    else
+        echo "    ⚠ config.yaml.example not found in source directory"
+        return 1
+    fi
+    
+    # Check if user config exists
+    if [ ! -f "$config_file" ]; then
+        echo "    ⚠ No existing config.yaml found, copying example"
+        cp "$updated_example" "$config_file"
+        return 0
+    fi
+    
+    # Check if yq is available
+    YQ_CMD="/usr/local/bin/yq"
+    if ! command -v "$YQ_CMD" &> /dev/null; then
+        echo "    ⚠ mikefarah yq not found at $YQ_CMD, skipping config merge"
+        return 0
+    fi
+    
+    # Verify it's the correct yq version
+    if [[ "$($YQ_CMD --version 2>&1)" != *"mikefarah/yq"* ]]; then
+        echo "    ⚠ Wrong yq version detected at $YQ_CMD, skipping config merge"
+        return 0
+    fi
+    
+    echo "    Merging configuration..."
+    
+    # Create backup of user config
+    local backup_file="${config_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$config_file" "$backup_file"
+    echo "    ✓ Backup created: $backup_file"
+    
+    # Merge strategy: user config takes precedence, add missing keys from example
+    # This uses yq's multiply merge operator (*) which:
+    # - Keeps all values from the right operand (user config)
+    # - Adds missing keys from the left operand (example config)
+    local temp_merged="${config_file}.merged"
+    
+    if "$YQ_CMD" eval-all '. as $item ireduce ({}; . * $item)' "$updated_example" "$config_file" > "$temp_merged" 2>/dev/null; then
+        # Verify the merged file is valid YAML
+        if "$YQ_CMD" eval '.' "$temp_merged" > /dev/null 2>&1; then
+            mv "$temp_merged" "$config_file"
+            echo "    ✓ Configuration merged successfully"
+            echo "    ✓ User settings preserved, new options added"
+            return 0
+        else
+            echo "    ✗ Merged config is invalid, restoring backup"
+            rm -f "$temp_merged"
+            cp "$backup_file" "$config_file"
+            return 1
+        fi
+    else
+        echo "    ✗ Config merge failed, keeping original"
+        rm -f "$temp_merged"
+        return 1
+    fi
 }
 
 # Main script logic

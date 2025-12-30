@@ -23,7 +23,6 @@ Restart=on-failure
 RestartSec=5
 
 # Resource limits
-CPUQuota=50%
 MemoryLimit=256M
 
 # Logging
