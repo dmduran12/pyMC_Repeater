@@ -3,13 +3,14 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 
 from .sqlite_handler import SQLiteHandler
 from .rrdtool_handler import RRDToolHandler
 from .mqtt_handler import MQTTHandler
 from .letsmesh_handler import MeshCoreToMqttJwtPusher
 from .storage_utils import PacketRecord
+from ..analytics.worker import AnalyticsWorker
 
 
 logger = logging.getLogger("StorageCollector")
@@ -24,10 +25,24 @@ class StorageCollector:
 
         node_name = config.get("repeater", {}).get("node_name", "unknown")
         node_id = local_identity.get_public_key().hex() if local_identity else "unknown"
+        
+        # Extract local hash for analytics
+        self.local_hash = node_id[:2].upper() if node_id and node_id != "unknown" else None
 
         self.sqlite_handler = SQLiteHandler(self.storage_dir)
         self.rrd_handler = RRDToolHandler(self.storage_dir)
         self.mqtt_handler = MQTTHandler(config.get("mqtt", {}), node_name, node_id)
+        
+        # Initialize analytics worker
+        # Share the same AnalyticsDB instance from SQLiteHandler for:
+        # - WAL mode and optimized pragmas
+        # - Thread-safe connection management
+        # - Queries across packets table and analytics tables
+        self.analytics_worker = AnalyticsWorker(
+            sqlite_path=self.sqlite_handler.db,  # Pass shared AnalyticsDB instance
+            local_hash=self.local_hash,
+        )
+        logger.info(f"Analytics worker initialized with shared DB: {self.sqlite_handler.sqlite_path}")
 
         # Initialize LetsMesh handler if configured
         self.letsmesh_handler = None
@@ -99,6 +114,10 @@ class StorageCollector:
         cumulative_counts = self.sqlite_handler.get_cumulative_counts()
         self.rrd_handler.update_packet_metrics(packet_record, cumulative_counts)
         self.mqtt_handler.publish(packet_record, "packet")
+        
+        # Feed packet to analytics worker for graph/topology processing
+        if self.analytics_worker:
+            self.analytics_worker.on_packet_received(packet_record)
 
         # Publish to LetsMesh if enabled (skip invalid packets if requested)
         if skip_letsmesh_if_invalid and packet_record.get('drop_reason'):
@@ -204,6 +223,12 @@ class StorageCollector:
                 logger.info("LetsMesh handler disconnected")
             except Exception as e:
                 logger.error(f"Error disconnecting LetsMesh handler: {e}")
+        if self.analytics_worker:
+            try:
+                self.analytics_worker.stop()
+                logger.info("Analytics worker stopped")
+            except Exception as e:
+                logger.error(f"Error stopping analytics worker: {e}")
 
     def create_transport_key(
         self,
@@ -257,3 +282,23 @@ class StorageCollector:
         except Exception as e:
             logger.error(f"Error getting hardware processes: {e}")
             return None
+
+    def start_analytics_worker(self):
+        """Start the analytics background worker thread"""
+        if self.analytics_worker:
+            self.analytics_worker.start()
+            logger.info("Analytics worker started")
+
+    def get_analytics_worker(self) -> Optional[AnalyticsWorker]:
+        """Get the analytics worker instance for API access"""
+        return self.analytics_worker
+
+    def get_sqlite_path(self) -> str:
+        """Get the path to the SQLite database"""
+        return str(self.sqlite_handler.sqlite_path)
+
+    def get_radio_config(self) -> Optional[dict]:
+        """Get radio config from repeater handler"""
+        if self.repeater_handler and hasattr(self.repeater_handler, "radio_config"):
+            return self.repeater_handler.radio_config
+        return None

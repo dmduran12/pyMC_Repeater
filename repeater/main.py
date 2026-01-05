@@ -242,6 +242,14 @@ class RepeaterDaemon:
 
         current_loop = asyncio.get_event_loop()
 
+        # Get storage collector from repeater handler for analytics API
+        storage_collector = None
+        if self.repeater_handler and self.repeater_handler.storage:
+            storage_collector = self.repeater_handler.storage
+            # Start analytics background worker
+            storage_collector.start_analytics_worker()
+            logger.info("Analytics worker started")
+
         self.http_server = HTTPStatsServer(
             host=http_host,
             port=http_port,
@@ -253,6 +261,7 @@ class RepeaterDaemon:
             event_loop=current_loop, 
             daemon_instance=self,  
             config_path=getattr(self, 'config_path', '/etc/pymc_repeater/config.yaml'),
+            storage_collector=storage_collector,
         )
 
         try:

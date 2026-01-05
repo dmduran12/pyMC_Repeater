@@ -7,18 +7,36 @@ import base64
 from pathlib import Path
 from typing import Optional, List
 
+from repeater.analytics.db import AnalyticsDB
+
 logger = logging.getLogger("SQLiteHandler")
 
+
 class SQLiteHandler:
+    """
+    Centralized SQLite data handler for the repeater.
+    
+    Uses AnalyticsDB for thread-safe connection management with WAL mode
+    and optimized SQLite pragmas for concurrent read/write performance.
+    
+    Attributes:
+        db: AnalyticsDB instance for connection management
+        sqlite_path: Path to the database file
+    """
+    
     def __init__(self, storage_dir: Path):
         self.storage_dir = storage_dir
         self.sqlite_path = self.storage_dir / "repeater.db"
+        
+        # Use AnalyticsDB for connection management (WAL mode, thread-safe)
+        self.db = AnalyticsDB(self.sqlite_path)
+        
         self._init_database()
         self._run_migrations()
 
     def _init_database(self):
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS packets (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,7 +127,7 @@ class SQLiteHandler:
     def _run_migrations(self):
         """Run database migrations"""
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 # Create migrations table if it doesn't exist
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS migrations (
@@ -149,7 +167,7 @@ class SQLiteHandler:
 
     def store_packet(self, record: dict):
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 orig_path = record.get("original_path")
                 fwd_path = record.get("forwarded_path")
                 try:
@@ -198,8 +216,7 @@ class SQLiteHandler:
 
     def store_advert(self, record: dict):
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 existing = conn.execute(
                     "SELECT pubkey, first_seen, advert_count, zero_hop, rssi, snr FROM adverts WHERE pubkey = ? ORDER BY last_seen DESC LIMIT 1",
                     (record.get("pubkey", ""),)
@@ -280,7 +297,7 @@ class SQLiteHandler:
 
     def store_noise_floor(self, record: dict):
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 conn.execute("""
                     INSERT INTO noise_floor (timestamp, noise_floor_dbm)
                     VALUES (?, ?)
@@ -295,8 +312,7 @@ class SQLiteHandler:
         try:
             cutoff = time.time() - (hours * 3600)
             
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 stats = conn.execute("""
                     SELECT 
@@ -347,8 +363,7 @@ class SQLiteHandler:
 
     def get_recent_packets(self, limit: int = 100) -> list:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 packets = conn.execute("""
                     SELECT 
@@ -374,8 +389,7 @@ class SQLiteHandler:
                            end_timestamp: Optional[float] = None,
                            limit: int = 1000) -> list:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 where_clauses = []
                 params = []
@@ -423,8 +437,7 @@ class SQLiteHandler:
 
     def get_packet_by_hash(self, packet_hash: str) -> Optional[dict]:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 packet = conn.execute("""
                     SELECT 
@@ -446,8 +459,7 @@ class SQLiteHandler:
         try:
             cutoff = time.time() - (hours * 3600)
             
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 type_counts = {}
                 packet_type_names = {
@@ -495,8 +507,7 @@ class SQLiteHandler:
         try:
             cutoff = time.time() - (hours * 3600)
             
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 route_counts = {}
                 route_names = {
@@ -538,8 +549,7 @@ class SQLiteHandler:
 
     def get_neighbors(self) -> dict:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 neighbors = conn.execute("""
                     SELECT pubkey, node_name, is_repeater, route_type, contact_type,
@@ -579,8 +589,7 @@ class SQLiteHandler:
         try:
             cutoff = time.time() - (hours * 3600)
             
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 measurements = conn.execute("""
                     SELECT timestamp, noise_floor_dbm
@@ -600,8 +609,7 @@ class SQLiteHandler:
         try:
             cutoff = time.time() - (hours * 3600)
             
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 stats = conn.execute("""
                     SELECT 
@@ -629,7 +637,7 @@ class SQLiteHandler:
         try:
             cutoff = time.time() - (days * 24 * 3600)
             
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 result = conn.execute("DELETE FROM packets WHERE timestamp < ?", (cutoff,))
                 packets_deleted = result.rowcount
                 
@@ -649,7 +657,7 @@ class SQLiteHandler:
 
     def get_cumulative_counts(self) -> dict:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 type_counts = {}
                 for i in range(16):
                     count = conn.execute("SELECT COUNT(*) FROM packets WHERE type = ?", (i,)).fetchone()[0]
@@ -681,8 +689,7 @@ class SQLiteHandler:
     def get_adverts_by_contact_type(self, contact_type: str, limit: Optional[int] = None, hours: Optional[int] = None) -> List[dict]:
   
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 
                 query = """
                     SELECT id, timestamp, pubkey, node_name, is_repeater, route_type, 
@@ -776,7 +783,7 @@ class SQLiteHandler:
                 transport_key = self.generate_transport_key(name)
                 
             current_time = time.time()
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 cursor = conn.execute("""
                     INSERT INTO transport_keys (name, flood_policy, transport_key, parent_id, last_used, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -788,8 +795,7 @@ class SQLiteHandler:
 
     def get_transport_keys(self) -> List[dict]:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 rows = conn.execute("""
                     SELECT id, name, flood_policy, transport_key, parent_id, last_used, created_at, updated_at
                     FROM transport_keys
@@ -812,8 +818,7 @@ class SQLiteHandler:
 
     def get_transport_key_by_id(self, key_id: int) -> Optional[dict]:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self.db.connection() as conn:
                 row = conn.execute("""
                     SELECT id, name, flood_policy, transport_key, parent_id, last_used, created_at, updated_at
                     FROM transport_keys WHERE id = ?
@@ -863,7 +868,7 @@ class SQLiteHandler:
             params.append(time.time())
             params.append(key_id)
             
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 cursor = conn.execute(f"""
                     UPDATE transport_keys SET {', '.join(updates)}
                     WHERE id = ?
@@ -875,7 +880,7 @@ class SQLiteHandler:
 
     def delete_transport_key(self, key_id: int) -> bool:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 cursor = conn.execute("DELETE FROM transport_keys WHERE id = ?", (key_id,))
                 return cursor.rowcount > 0
         except Exception as e:
@@ -884,7 +889,7 @@ class SQLiteHandler:
 
     def delete_advert(self, advert_id: int) -> bool:
         try:
-            with sqlite3.connect(self.sqlite_path) as conn:
+            with self.db.connection() as conn:
                 cursor = conn.execute("DELETE FROM adverts WHERE id = ?", (advert_id,))
                 return cursor.rowcount > 0
         except Exception as e:

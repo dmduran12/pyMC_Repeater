@@ -12,6 +12,7 @@ from pymc_core.protocol.utils import PAYLOAD_TYPES, ROUTE_TYPES
 
 from repeater import __version__
 from .api_endpoints import APIEndpoints
+from .analytics_api import AnalyticsAPI
 
 logger = logging.getLogger("HTTPServer")
 
@@ -54,6 +55,7 @@ class StatsApp:
         event_loop=None,
         daemon_instance=None,
         config_path=None,
+        storage_collector=None,
     ):
 
         self.stats_getter = stats_getter
@@ -69,6 +71,17 @@ class StatsApp:
 
         # Create nested API object for routing
         self.api = APIEndpoints(stats_getter, send_advert_func, self.config, event_loop, daemon_instance, config_path)
+        
+        # Mount analytics API if storage collector available
+        if storage_collector:
+            local_hash = getattr(storage_collector, 'local_hash', None)
+            self.api.analytics = AnalyticsAPI(
+                sqlite_path=storage_collector.get_sqlite_path(),
+                local_hash=local_hash,
+                neighbors_getter=storage_collector.get_neighbors,
+                radio_config_getter=storage_collector.get_radio_config,
+            )
+            logger.info("Analytics API mounted at /api/analytics")
 
     @cherrypy.expose
     def index(self):
@@ -112,13 +125,14 @@ class HTTPStatsServer:
         event_loop=None,
         daemon_instance=None,
         config_path=None,
+        storage_collector=None,
     ):
 
         self.host = host
         self.port = port
         self.config = config or {}
         self.app = StatsApp(
-            stats_getter, node_name, pub_key, send_advert_func, config, event_loop, daemon_instance, config_path
+            stats_getter, node_name, pub_key, send_advert_func, config, event_loop, daemon_instance, config_path, storage_collector
         )
         
         # Set up CORS at the server level if enabled
