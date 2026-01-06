@@ -160,6 +160,86 @@ class SQLiteHandler:
                     )
                     logger.info(f"Migration '{migration_name}' applied successfully")
                 
+                # Migration 2: Add metric_history table for time-series analytics
+                migration_name = "add_metric_history_table"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,)
+                ).fetchone()
+                
+                if not existing:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS metric_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            timestamp REAL NOT NULL,
+                            metric_type TEXT NOT NULL,
+                            node_hash TEXT,
+                            value REAL NOT NULL
+                        )
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_metric_history_type_time ON metric_history(metric_type, timestamp)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_metric_history_node ON metric_history(node_hash, metric_type, timestamp)")
+                    
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time())
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+                
+                # Migration 3: Add network_events table for anomaly detection
+                migration_name = "add_network_events_table"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,)
+                ).fetchone()
+                
+                if not existing:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS network_events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            timestamp REAL NOT NULL,
+                            event_type TEXT NOT NULL,
+                            node_hash TEXT,
+                            edge_key TEXT,
+                            severity TEXT DEFAULT 'info',
+                            description TEXT,
+                            metadata TEXT
+                        )
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_network_events_time ON network_events(timestamp)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_network_events_type ON network_events(event_type, timestamp)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_network_events_node ON network_events(node_hash, timestamp)")
+                    
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time())
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+                
+                # Migration 4: Add graph_metrics_cache table for expensive computations
+                migration_name = "add_graph_metrics_cache_table"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,)
+                ).fetchone()
+                
+                if not existing:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS graph_metrics_cache (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            computed_at REAL NOT NULL,
+                            min_certainty INTEGER NOT NULL,
+                            metrics_json TEXT NOT NULL,
+                            UNIQUE(min_certainty)
+                        )
+                    """)
+                    
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time())
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+                
                 conn.commit()
                 
         except Exception as e:

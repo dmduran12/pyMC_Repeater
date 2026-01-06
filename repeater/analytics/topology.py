@@ -113,6 +113,13 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 from .db import AnalyticsDB, ensure_connection, DBConnection
 from .edge_builder import get_validated_edges, make_edge_key
 
+# Try to import NetworkX for improved graph algorithms
+try:
+    from .graph import build_graph_from_db, MeshGraph, NETWORKX_AVAILABLE
+except ImportError:
+    NETWORKX_AVAILABLE = False
+    MeshGraph = None
+
 logger = logging.getLogger("Analytics.Topology")
 
 # Topology thresholds (match frontend constants)
@@ -231,9 +238,13 @@ def build_adjacency_list(edges: List[dict]) -> Dict[str, Set[str]]:
 def calculate_edge_betweenness(
     edges: List[dict],
     backbone_threshold: float = 0.1,
+    use_networkx: bool = True,
 ) -> Tuple[Dict[str, float], List[str]]:
     """
-    Calculate edge betweenness centrality using BFS.
+    Calculate edge betweenness centrality.
+    
+    When NetworkX is available, uses optimized algorithm.
+    Otherwise falls back to manual BFS implementation.
     
     Edge betweenness measures how many shortest paths pass through each edge.
     High betweenness edges are critical for network connectivity.
@@ -241,10 +252,58 @@ def calculate_edge_betweenness(
     Args:
         edges: List of edge dicts
         backbone_threshold: Threshold for backbone classification (default 0.1 = top 10%)
+        use_networkx: Whether to use NetworkX if available (default True)
         
     Returns:
         Tuple of (edge_key -> betweenness, list of backbone edge keys)
     """
+    # Try NetworkX for optimized edge betweenness
+    if use_networkx and NETWORKX_AVAILABLE:
+        try:
+            import networkx as nx
+            
+            # Build graph and edge key mapping
+            G = nx.DiGraph()
+            edge_key_map = {}
+            
+            for e in edges:
+                from_h = e.get("fromHash") or e.get("from_hash")
+                to_h = e.get("toHash") or e.get("to_hash")
+                key = e.get("edgeKey") or e.get("edge_key")
+                if from_h and to_h and key:
+                    G.add_edge(from_h, to_h)
+                    G.add_edge(to_h, from_h)  # Undirected
+                    edge_key_map[(from_h, to_h)] = key
+                    edge_key_map[(to_h, from_h)] = key
+            
+            if G.number_of_edges() == 0:
+                return {}, []
+            
+            # Calculate edge betweenness
+            nx_betweenness = nx.edge_betweenness_centrality(G, normalized=True)
+            
+            # Convert to edge keys
+            betweenness = {}
+            for (u, v), score in nx_betweenness.items():
+                key = edge_key_map.get((u, v))
+                if key:
+                    betweenness[key] = max(betweenness.get(key, 0), score)
+            
+            # Identify backbone edges (top 10% by betweenness)
+            if betweenness:
+                sorted_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)
+                threshold_count = max(1, int(len(sorted_edges) * backbone_threshold))
+                backbone = [key for key, _ in sorted_edges[:threshold_count]]
+            else:
+                backbone = []
+            
+            logger.debug(f"Calculated NetworkX edge betweenness for {len(betweenness)} edges")
+            return betweenness, backbone
+            
+        except Exception as e:
+            logger.warning(f"NetworkX edge betweenness failed, falling back to BFS: {e}")
+    
+    # Fallback: manual BFS implementation (original code)
     from collections import deque
     
     adjacency = build_adjacency_list(edges)
@@ -334,20 +393,50 @@ def calculate_edge_betweenness(
 def calculate_centrality(
     edges: List[dict],
     packet_counts: Optional[Dict[str, int]] = None,
+    use_networkx: bool = True,
 ) -> Dict[str, float]:
     """
     Calculate betweenness centrality for all nodes.
     
-    Uses a simplified approach based on edge connectivity.
-    Nodes with more edges and higher packet counts score higher.
+    When NetworkX is available, uses proper betweenness centrality algorithm.
+    Otherwise falls back to simplified edge-count based approach.
     
     Args:
         edges: List of edge dicts
         packet_counts: Optional node -> packet count for weighting
+        use_networkx: Whether to use NetworkX if available (default True)
         
     Returns:
         Dict mapping node hash -> centrality score (0-1)
     """
+    # Try NetworkX for proper betweenness centrality
+    if use_networkx and NETWORKX_AVAILABLE and MeshGraph is not None:
+        try:
+            import networkx as nx
+            
+            # Build graph from edges
+            G = nx.DiGraph()
+            for e in edges:
+                from_h = e.get("fromHash") or e.get("from_hash")
+                to_h = e.get("toHash") or e.get("to_hash")
+                weight = e.get("certainCount") or e.get("certain_count", 1)
+                if from_h and to_h:
+                    G.add_edge(from_h, to_h, weight=weight)
+                    G.add_edge(to_h, from_h, weight=weight)  # Undirected
+            
+            if G.number_of_nodes() == 0:
+                return {}
+            
+            # Calculate betweenness centrality
+            centrality = nx.betweenness_centrality(G, normalized=True)
+            
+            logger.debug(f"Calculated NetworkX betweenness centrality for {len(centrality)} nodes")
+            return centrality
+            
+        except Exception as e:
+            logger.warning(f"NetworkX centrality failed, falling back to simple method: {e}")
+    
+    # Fallback: simplified approach based on edge connectivity
     adjacency = build_adjacency_list(edges)
     
     if not adjacency:

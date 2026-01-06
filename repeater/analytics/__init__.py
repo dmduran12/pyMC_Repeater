@@ -90,7 +90,6 @@ See Also
 
 from .edge_builder import (
     extract_edges_from_packet,
-    make_edge_key,
     EdgeObservation,
 )
 from .bucketing import (
@@ -112,8 +111,10 @@ from .topology import (
     TopologyEdge,
 )
 from .disambiguation import (
-    PrefixCandidate,
-    ResolvedPrefix,
+    DisambiguationCandidate,
+    DisambiguationResult,
+    DisambiguationStats,
+    PrefixLookup,
 )
 from .path_registry import (
     ObservedPath,
@@ -127,12 +128,62 @@ from .db import (
     QueryError,
     DBConnection,
     ensure_connection,
+    with_connection,
+)
+from .graph import (
+    MeshGraph,
+    PathResult,
+    CentralityResult,
+    ComponentResult,
+    MaxFlowEdge,
+    MaxFlowResult,
+    build_graph_from_db,
+    NETWORKX_AVAILABLE,
+)
+from .utils import (
+    normalize_hash,
+    get_prefix,
+    validate_hash,
+    validate_prefix,
+    make_edge_key,
+    parse_edge_key,
+    hashes_match,
+    sanitize_for_sql,
+)
+from .errors import (
+    ErrorCode,
+    AnalyticsError,
+    api_success,
+    api_error,
+    api_error_from_exception,
+    invalid_param,
+    missing_param,
+    not_found,
+)
+from .config import Config, reload_config
+from .validation import (
+    ValidationError,
+    validate_positive_int,
+    validate_positive_float,
+    validate_hours,
+    validate_limit,
+    validate_min_certainty,
+    validate_hash_param,
+    validate_bool,
+    validate_string_choice,
+)
+from .cache import (
+    GraphCache,
+    CacheStats,
+    get_graph_cache,
+    get_cached_graph,
+    invalidate_graph_cache,
+    get_cache_stats,
 )
 
 __all__ = [
     # Edge builder
     "extract_edges_from_packet",
-    "make_edge_key",
     "EdgeObservation",
     # Bucketing
     "compute_time_bucket",
@@ -150,8 +201,10 @@ __all__ = [
     "TopologySnapshot",
     "TopologyEdge",
     # Disambiguation
-    "PrefixCandidate",
-    "ResolvedPrefix",
+    "DisambiguationCandidate",
+    "DisambiguationResult",
+    "DisambiguationStats",
+    "PrefixLookup",
     # Path registry
     "ObservedPath",
     "PathHealth",
@@ -164,4 +217,52 @@ __all__ = [
     "QueryError",
     "DBConnection",
     "ensure_connection",
+    "with_connection",
+    # Graph
+    "MeshGraph",
+    "PathResult",
+    "CentralityResult",
+    "ComponentResult",
+    "MaxFlowEdge",
+    "MaxFlowResult",
+    "build_graph_from_db",
+    "NETWORKX_AVAILABLE",
+    # Utils
+    "normalize_hash",
+    "get_prefix",
+    "validate_hash",
+    "validate_prefix",
+    "make_edge_key",
+    "parse_edge_key",
+    "hashes_match",
+    "sanitize_for_sql",
+    # Errors
+    "ErrorCode",
+    "AnalyticsError",
+    "api_success",
+    "api_error",
+    "api_error_from_exception",
+    "invalid_param",
+    "missing_param",
+    "not_found",
+    # Config
+    "Config",
+    "reload_config",
+    # Validation
+    "ValidationError",
+    "validate_positive_int",
+    "validate_positive_float",
+    "validate_hours",
+    "validate_limit",
+    "validate_min_certainty",
+    "validate_hash_param",
+    "validate_bool",
+    "validate_string_choice",
+    # Cache
+    "GraphCache",
+    "CacheStats",
+    "get_graph_cache",
+    "get_cached_graph",
+    "invalidate_graph_cache",
+    "get_cache_stats",
 ]

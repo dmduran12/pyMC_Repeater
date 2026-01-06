@@ -64,7 +64,12 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, Union
+
+# Type alias for row results - sqlite3.Row supports both index and key access
+# When row_factory = sqlite3.Row, rows are sqlite3.Row objects (not dicts)
+# Use row["column"] or row[0] syntax, or dict(row) for full dict conversion
+RowType = sqlite3.Row
 
 logger = logging.getLogger("Analytics.DB")
 
@@ -129,7 +134,7 @@ class AnalyticsDB:
         
         logger.info(f"AnalyticsDB initialized: {self.db_path}")
     
-    def _ensure_db_exists(self):
+    def _ensure_db_exists(self) -> None:
         """Ensure database file and parent directories exist."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -138,7 +143,7 @@ class AnalyticsDB:
             self.db_path.touch()
             logger.info(f"Created database file: {self.db_path}")
     
-    def _configure_connection(self, conn: sqlite3.Connection):
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
         """Apply standard pragmas to a new connection."""
         for pragma, value in SQLITE_PRAGMAS.items():
             try:
@@ -189,12 +194,18 @@ class AnalyticsDB:
         Automatically handles connection cleanup and commit/rollback.
         
         Yields:
-            Configured SQLite connection
+            Configured SQLite connection with row_factory=sqlite3.Row.
+            Query results are sqlite3.Row objects supporting both:
+            - Index access: row[0], row[1]
+            - Key access: row["column_name"]
+            - Dict conversion: dict(row)
             
         Example:
             >>> with db.connection() as conn:
-            ...     conn.execute("INSERT INTO ...")
-            ...     # Auto-commits on success, rolls back on exception
+            ...     cursor = conn.execute("SELECT name, value FROM config")
+            ...     for row in cursor:
+            ...         print(row["name"], row["value"])  # Key access
+            ...         print(dict(row))  # Full dict if needed
         """
         conn = self.get_connection()
         try:
@@ -313,7 +324,7 @@ class AnalyticsDB:
             for row in rows
         ]
     
-    def vacuum(self):
+    def vacuum(self) -> None:
         """
         Compact the database file.
         
@@ -334,7 +345,7 @@ class AnalyticsDB:
         except sqlite3.Error as e:
             logger.error(f"Vacuum failed: {e}")
     
-    def checkpoint(self):
+    def checkpoint(self) -> None:
         """
         Force a WAL checkpoint.
         
@@ -385,6 +396,39 @@ def ensure_connection(conn_or_db: DBConnection) -> Iterator[sqlite3.Connection]:
     else:
         # Already a raw connection - don't manage it (caller's responsibility)
         yield conn_or_db
+
+
+# TypeVar for decorator return type preservation
+F = TypeVar('F', bound=Callable[..., Any])
+
+
+def with_connection(func: F) -> F:
+    """
+    Decorator that normalizes the first 'conn' argument.
+    
+    Use this decorator for functions that take a connection as their first
+    parameter. The decorator will ensure the connection is properly
+    unwrapped if an AnalyticsDB instance is passed.
+    
+    Example:
+        @with_connection
+        def my_query(conn: DBConnection, param1: str) -> List:
+            cursor = conn.cursor()
+            cursor.execute("SELECT ...")
+            return cursor.fetchall()
+            
+        # Can call with either:
+        result = my_query(sqlite3_conn, "value")
+        result = my_query(analytics_db, "value")
+    """
+    from functools import wraps
+    
+    @wraps(func)
+    def wrapper(conn_or_db: DBConnection, *args: Any, **kwargs: Any) -> Any:
+        with ensure_connection(conn_or_db) as conn:
+            return func(conn, *args, **kwargs)
+    
+    return wrapper  # type: ignore[return-value]
 
 
 # Module-level singleton for convenience (optional usage pattern)

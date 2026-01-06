@@ -84,6 +84,12 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+# Import from centralized utils and re-export for backwards compatibility
+from .utils import (
+    get_prefix as get_hash_prefix,
+    make_edge_key,
+)
+
 logger = logging.getLogger("Analytics.EdgeBuilder")
 
 
@@ -103,26 +109,8 @@ class EdgeObservation:
     disambiguation_conf: float = 0.0  # Confidence from disambiguation system
 
 
-def make_edge_key(hash_a: str, hash_b: str) -> str:
-    """
-    Create canonical edge key from two hashes.
-    
-    Edge keys are always sorted alphabetically to ensure
-    consistent lookup regardless of traversal direction.
-    
-    Args:
-        hash_a: First node hash (e.g., "0xABCD1234")
-        hash_b: Second node hash
-        
-    Returns:
-        Canonical edge key (e.g., "0xABCD1234:0xEF567890")
-    """
-    normalized_a = hash_a.upper()
-    normalized_b = hash_b.upper()
-    
-    if normalized_a < normalized_b:
-        return f"{normalized_a}:{normalized_b}"
-    return f"{normalized_b}:{normalized_a}"
+# make_edge_key and get_hash_prefix are now imported from .utils
+# They are re-exported here for backwards compatibility
 
 
 def parse_path(raw_path) -> Optional[List[str]]:
@@ -168,23 +156,7 @@ def parse_path(raw_path) -> Optional[List[str]]:
     return result if result else None
 
 
-def get_hash_prefix(full_hash: str) -> str:
-    """
-    Extract 2-char prefix from full hash.
-    
-    Handles formats:
-        - "0xABCDEF12" -> "AB"
-        - "ABCDEF12" -> "AB"
-        - "AB" -> "AB"
-    """
-    if not full_hash:
-        return ""
-    
-    h = full_hash.upper()
-    if h.startswith("0X"):
-        h = h[2:]
-    
-    return h[:2] if len(h) >= 2 else h
+# get_hash_prefix is imported from .utils and re-exported above
 
 
 def extract_edges_from_packet(
